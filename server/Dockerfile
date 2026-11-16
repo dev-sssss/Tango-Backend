@@ -2,8 +2,8 @@
 # Builds tango-server for any platform without emulation: Go cross-compiles
 # on the build machine, the final image is a static distroless base.
 FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
-ARG TARGETOS=linux
-ARG TARGETARCH=arm64
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION=dev
 # Unix seconds; the cluster places new matches on the newest build.
 ARG BUILD_TIME=0
