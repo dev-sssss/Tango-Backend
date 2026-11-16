@@ -1,0 +1,38 @@
+- name: Docker, Compose and the ECR credential helper
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose-v2, amazon-ecr-credential-helper]
+    state: present
+
+- name: Docker daemon settings (log rotation keeps the disk small)
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "20m", "max-file": "5" },
+        "live-restore": true
+      }
+    mode: "0644"
+  notify: Restart docker
+
+- name: Docker running
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Docker config directory
+  ansible.builtin.file:
+    path: /root/.docker
+    state: directory
+    mode: "0700"
+
+- name: Pull from ECR with the instance role (no stored passwords)
+  ansible.builtin.copy:
+    dest: /root/.docker/config.json
+    content: "{{ {'credHelpers': {ecr_registry: 'ecr-login'}} | to_nice_json }}"
+    mode: "0600"
+  when: ecr_registry | length > 0
+
+- name: Apply pending Docker restarts now
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,47 @@
+- name: Wait for first-boot setup to finish
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+  failed_when: false
+
+- name: Base packages
+  ansible.builtin.apt:
+    name: [curl, ca-certificates, python3-boto3, unattended-upgrades, jq]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Time zone (IST)
+  ansible.builtin.command: timedatectl set-timezone Asia/Kolkata
+  changed_when: ansible_date_time.tz != 'IST'
+
+- name: Swap file (helps a 4 GB instance through spikes)
+  ansible.builtin.command: >
+    bash -c 'fallocate -l {{ swap_size_mb }}M /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile'
+  args:
+    creates: /swapfile
+
+- name: Swap on boot
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: "/swapfile none swap sw 0 0"
+
+- name: Kernel settings for many sockets
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-tango.conf
+    content: |
+      net.core.somaxconn = 4096
+      net.ipv4.tcp_max_syn_backlog = 4096
+      net.ipv4.ip_local_port_range = 10240 65000
+      fs.file-max = 1048576
+      vm.swappiness = 10
+    mode: "0644"
+  notify: Reload sysctl
+
+- name: Keep the journal small
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/size.conf
+    content: |
+      [Journal]
+      SystemMaxUse=300M
+    mode: "0644"
+  notify: Restart journald

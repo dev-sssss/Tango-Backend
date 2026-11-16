@@ -1,0 +1,37 @@
+# tango-server node configuration ({{ tango_environment }}). Managed by Ansible.
+logger:
+  level: info
+  format: json
+database:
+  address:
+    - "postgres://tango:{{ secrets.db_password }}@postgres:5432/tango?sslmode=disable"
+  max_open_conns: 40
+session:
+  encryption_key: "{{ secrets.session_key }}"
+  refresh_encryption_key: "{{ secrets.refresh_key }}"
+  token_expiry_sec: 7200
+  refresh_token_expiry_sec: 2592000
+socket:
+  server_key: "{{ secrets.server_key }}"
+  address: 0.0.0.0
+  port: 7350
+  trusted_proxy_header: X-Forwarded-For
+security:
+  trusted_proxies: ["172.28.0.0/24"]
+runtime:
+  http_key: "{{ secrets.http_key }}"
+  env:
+    - "DEPLOYMENT_ENVIRONMENT={{ tango_environment }}"
+    - "TANGO_ALLOW_CHEATS={{ 'true' if allow_cheats and tango_environment != 'production' else 'false' }}"
+    - "GOOGLE_IAP_ENABLED={{ 'true' if google_iap_enabled else 'false' }}"
+    - "TANGO_ANDROID_PACKAGE={{ android_package }}"
+cluster:
+  secret: "{{ secrets.cluster_secret }}"
+  roles: [gateway, game]
+  bus_port: 7352
+  admin_port: 7351
+  admin_address: 0.0.0.0
+  drain_timeout_ms: 30000
+  presence_grace_ms: 10000
+metrics:
+  prometheus_port: 9100

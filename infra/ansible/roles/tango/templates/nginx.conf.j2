@@ -1,0 +1,97 @@
+# Managed by Ansible. TLS {{ 'on' if tls_enabled else 'off (certificate not issued yet)' }}.
+worker_processes auto;
+worker_rlimit_nofile 65536;
+events { worker_connections 8192; }
+
+http {
+  server_tokens off;
+  resolver 127.0.0.11 valid=10s ipv6=off;
+  log_format main '$remote_addr [$time_local] "$request" $status $body_bytes_sent $request_time "$http_user_agent"';
+  access_log /var/log/nginx/access.log main;
+  sendfile on;
+  keepalive_timeout 65;
+  client_max_body_size 1m;
+
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+  }
+
+  # Sign-in attempts per IP (many players share mobile-carrier IPs, so this
+  # is generous; the server has its own finer limits).
+  limit_req_zone $binary_remote_addr zone=auth:10m rate=60r/m;
+  limit_conn_zone $binary_remote_addr zone=perip:10m;
+
+  upstream tango {
+    zone tango 64k;
+    least_conn;
+{% for n in tango_nodes %}
+    server tango-{{ n.name }}:7350 resolve max_fails=1 fail_timeout=3s;
+{% endfor %}
+    keepalive 32;
+  }
+
+  server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ hostname_public }} _;
+
+    location /.well-known/acme-challenge/ {
+      root /var/www/certbot;
+    }
+{% if tls_enabled %}
+    location / {
+      return 301 https://$host$request_uri;
+    }
+  }
+
+  server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name {{ hostname_public }} _;
+    ssl_certificate     /etc/letsencrypt/live/tango/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tango/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+{% endif %}
+
+    # Realtime socket (Nakama protocol) and the v2 socket.
+    location ~ ^/(ws|api/v2/socket)$ {
+      proxy_pass http://tango;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_read_timeout 120s;
+      proxy_send_timeout 120s;
+      proxy_next_upstream error timeout http_502 http_503;
+      limit_conn perip 50;
+    }
+
+    location ~ ^/(v2/account/authenticate|api/v2/auth) {
+      limit_req zone=auth burst=30 nodelay;
+      proxy_pass http://tango;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_next_upstream error timeout http_502 http_503;
+    }
+
+    location / {
+      proxy_pass http://tango;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_next_upstream error timeout http_502 http_503;
+      proxy_read_timeout 30s;
+    }
+  }
+}

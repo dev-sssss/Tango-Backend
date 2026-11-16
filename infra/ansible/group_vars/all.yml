@@ -1,0 +1,20 @@
+# Values the pipeline passes in vars.json override these.
+tango_dir: /opt/tango
+tango_environment: nonprod
+tango_image: ""            # full ECR image reference with tag
+aws_region: ap-south-1
+param_path: /tango/nonprod
+hostname_public: ""        # own domain, or the Elastic IP
+ops_bucket: ""
+ecr_registry: ""           # <account>.dkr.ecr.<region>.amazonaws.com
+allow_cheats: true         # dev shortcut (+10,000 coins); never in production
+google_iap_enabled: false
+android_package: ""
+letsencrypt_staging: false
+postgres_image: postgres:16-alpine
+nginx_image: nginx:1.28-alpine
+certbot_image: certbot/certbot:latest   # >= 5.4 needed for IP address certificates
+swap_size_mb: 2048
+tango_nodes:
+  - { name: node1, admin_port: 7361 }
+  - { name: node2, admin_port: 7362 }

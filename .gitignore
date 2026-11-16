@@ -1,0 +1,20 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+.terraform.lock.hcl.bak
+# Ansible
+infra/ansible/vars.json
+*.retry
+# Build output
+server/bin/
+server/tango-server
+*.test
+*.tgz
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

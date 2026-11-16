@@ -1,0 +1,156 @@
+# Tango Cards: client ↔ server protocol
+
+The server is authoritative: the Unity app sends **intents** ("play card 42",
+"draw", "press TANGO!") and renders the **state** the server sends back. Every
+rule (legal cards, stacking, challenges, the hammer, payouts, bots, timers) is
+decided on the server; nothing in the app needs to know the rules to stay
+correct.
+
+The server speaks the Nakama protocol, so the app uses the official
+**Nakama Unity SDK** (`com.heroiclabs.nakama-unity`) for sign-in, RPCs and the
+realtime socket.
+
+## Connection
+
+| Setting | Value |
+|---|---|
+| Scheme | `https` |
+| Host | shown in the pipeline summary (the server's fixed IP address, e.g. `13.234.5.6`, until you use your own domain) |
+| Port | `443` |
+| Server key | shown in the pipeline summary (`tango-…`) |
+
+```csharp
+var client  = new Nakama.Client("https", host, 443, serverKey);
+var session = await client.AuthenticateDeviceAsync(SystemInfo.deviceUniqueIdentifier);
+var socket  = client.NewSocket();
+await socket.ConnectAsync(session, appearOnline: true);
+socket.ReceivedMatchState += OnMatchState;   // all game messages arrive here
+```
+
+Google sign-in: `client.AuthenticateGoogleAsync(idToken)`.
+
+## RPCs
+
+Call with `client.RpcAsync(session, id, jsonPayload)`. Every response is JSON
+with `"success": true` or `"success": false, "error": "<CODE>"`.
+
+| RPC id | Payload | Returns |
+|---|---|---|
+| `tango.profile.get` | `{}` | `profile` (name, avatar, frame, badge, card_back, table, trophies, wins, losses, games), `level`, `wallet {coins, diamonds}`. Call first after sign-in: creates the profile and the starting wallet (2,000 coins, 20 diamonds) once. |
+| `tango.profile.update` | `{"name":"Robin"}` and/or `{"tutorial_done":true}` | `profile`. Names 3–16 letters/digits/space/`_.-`. |
+| `tango.wallet.get` | `{}` | `wallet` |
+| `tango.shop.catalog` | `{}` | `items[] {id, category, name, price{coins\|diamonds}, rarity, owned}`, `iap_products[]` |
+| `tango.shop.purchase` | `{"item_id":"frame_gold"}` | `wallet`. Errors: `INSUFFICIENT_FUNDS`, `ALREADY_OWNED`, `UNKNOWN_ITEM` |
+| `tango.inventory.get` | `{}` | `owned[]`, `equipped {avatar, frame, badge, card_back, table}` |
+| `tango.inventory.equip` | `{"category":"frame","item_id":"frame_gold"}` | `profile`. Categories: avatar, frame, badge, card_back, table |
+| `tango.ads.claim_reward` | `{}` after a completed rewarded ad | `coins` (250–300), `remaining_today`, `wallet`. Limits: 10/day, 30 s apart |
+| `tango.iap.verify_google` | `{"receipt":"<purchase JSON from Play Billing>"}` | `credited`, `wallet` (enable with `GOOGLE_IAP_ENABLED`) |
+| `tango.dev.grant` | `{}` | +10,000 coins, +1,000 diamonds. **Non-prod only** (the tap-coins-three-times shortcut) |
+| `tango.match.quick_join` | `{"mode":"classic"\|"no_mercy","format":"1v1"\|"2v2"\|"4v4","fee":200}` | `match_id` → join it on the socket. Fees: 200, 400, 1000, 2000, 5000 |
+| `tango.room.create` | `{"mode","format","fee":0,"settings":{"turn_seconds":15,"emotes":true,"spectators":false,"mic":false}}` | `room_code` (6 digits), `match_id` |
+| `tango.room.join` | `{"room_code":"123456"}` | `match_id`. Errors: `ROOM_NOT_FOUND`, `ROOM_STARTED`, `ROOM_FULL` |
+| `tango.match.active` | `{}` | `match_id` of a game still running (rejoin after a crash), or `null` |
+| `tango.match.forfeit` | `{}` | leaves the running game for good |
+| `tango.friends.list` | `{}` | friends (name, avatar, frame, trophies, level, status online/in_game/offline, last_seen), requests, your 8-character **friend code** |
+| `tango.friends.add` | `{"query":"AB12CD34"}` | sends a request (friend code or username) |
+| `tango.friends.action` | `{"user_id":"…","action":"accept"\|"decline"\|"cancel"\|"remove"\|"block"\|"unblock"}` | |
+| `tango.friends.invite` | `{"user_id":"…","room_code":"123456","mode":"classic"}` | invite shows in the friend's list |
+| `tango.leaderboard.get` | `{"id":"trophies"\|"weekly_trophies","limit":50}` | `records[]`, `me` |
+| `tango.app.config` | `{}` | entry fees, ad limits, turn-time options, maintenance message |
+| `tango.account.delete` | `{"confirm":true}` | deletes the account (Play Store requirement) |
+
+## Playing a match
+
+1. `tango.match.quick_join` (or `tango.room.create` / `tango.room.join`) → `match_id`
+2. `await socket.JoinMatchAsync(matchId)`
+3. Receive `lobby` messages; public matches fill empty seats after 15 s;
+   private rooms start when full or when the host sends `START`.
+4. `game_start`, then game events, each carrying `state` (see below).
+5. `game_over` with the scoreboard. Public: back to lobby. Private: `REMATCH`.
+
+Send with `socket.SendMatchStateAsync(matchId, opCode, json)`.
+
+### App → server
+
+| Op | Name | Payload |
+|---|---|---|
+| 1 | PLAY | `{"card_id":42,"color":"red","tango":true}` — `color` for black cards (or send CHOOSE_COLOR next); `tango:true` presses TANGO! in the same message when going down to one card |
+| 2 | DRAW | `{}` — draws one card, or takes the whole pending stack |
+| 3 | KEEP_OR_PLAY | `{"play":true,"color":"blue"}` — answer for a drawn black plus |
+| 4 | TANGO | `{}` — press TANGO! (allowed at two cards or fewer) |
+| 5 | HAMMER | `{"seat":2}` — tap the hammer on a player who forgot TANGO! (a miss costs nothing) |
+| 6 | CHALLENGE | `{}` — challenge the first black plus of a stack |
+| 7 | EMOTE | `{"id":"emote_laugh"}` |
+| 8 | REMATCH | `{}` — private rooms after the game |
+| 9 | SNAPSHOT | `{}` — ask for the full state again |
+| 10 | FORFEIT | `{}` |
+| 11 | CHOOSE_COLOR | `{"color":"green"}` |
+| 12 | START | `{}` — private room host: start now (empty seats get bots) |
+
+### Server → app
+
+Every message is JSON with `type` and usually `seat`. The **last message of
+each batch carries `state`**: replace your whole view with it; use the events
+before it for animations.
+
+| Op | type | Fields |
+|---|---|---|
+| 100 | `snapshot` | `state` |
+| 101 | `lobby` | `state` (players so far, `fill_at_ms`, `start_at_ms`) |
+| 102 | `game_start` | `state` |
+| 103 | `turn` / `skipped` | `phase`, `phase_seat`, `deadline_ms`, `pending`, `color`, `dir`, `can_challenge` |
+| 104 | `card_played` | `card`, `auto` (drawn card played by itself), `hand_count`, `vulnerable` |
+| 105 | `cards_drawn` | `count`, `reason` (`draw`, `stack`, `hammer`, `challenge`), `cards` (**only for you and your teammates**) / `reshuffle` |
+| 106 | `color_chosen` | `color` |
+| 107 | `tango` | seat pressed TANGO! (play the voice) |
+| 108 | `hammer` | `target`, `hit`, `count` |
+| 109 | `challenge` | `target`, `success`, `drawer`, `count` |
+| 110 | `drawn_choice` | `cards` (the drawn black plus), `deadline_ms` — show Keep / Play |
+| 111 | `player_connected` / `player_disconnected` / `player_removed` | |
+| 112 | `emote` | `seat`, `id` |
+| 113 | `game_over` | `results[] {seat, rank, name, points, winner, coins, trophies, level}`, `winner_team`, `rematch_allowed` |
+| 114 | `rematch` | `votes[]`, `needed` |
+| 115 | `error` | `code` (e.g. `NOT_YOUR_TURN`, `ILLEGAL_CARD`, `MUST_STACK_OR_DRAW`, `CANNOT_CHALLENGE`, `TOO_MANY_CARDS`) |
+
+All times are server milliseconds; every message has `server_time_ms` to
+correct the device clock for countdowns.
+
+### `state`
+
+```json
+{
+  "match_id": "…", "mode": "no_mercy", "format": "2v2", "fee": 400, "private": false,
+  "status": "PLAYING", "round": 1, "you": 0, "max_players": 4, "rev": 57,
+  "settings": {"turn_seconds": 15, "emotes": true, "spectators": false, "mic": false},
+  "players": [
+    {"seat": 0, "user_id": "…", "name": "Robin", "avatar": "avatar_01", "frame": "frame_gold",
+     "badge": "badge_basic", "card_back": "back_classic", "trophies": 340, "level": 4, "team": 0,
+     "connected": true, "removed": false, "hand_count": 5, "tango": false, "vulnerable": false,
+     "hand": [{"id": 12, "color": "red", "kind": "number", "value": 7}]}
+  ],
+  "game": {
+    "top": {"id": 88, "color": "wild", "kind": "wild4"}, "color": "green", "turn": 1, "dir": 1,
+    "pending": 4, "phase": "turn", "phase_seat": 1, "deadline_ms": 1763280000000,
+    "draw_count": 61, "discard_count": 14, "recent": [], "playable": [12, 19], "can_challenge": false
+  }
+}
+```
+
+* `hand` is present only for you and, in 2v2/4v4, your teammates.
+* `playable` lists the card ids you may play right now: make those glow.
+* Card kinds: `number` (with `value`), `skip`, `reverse`, `draw2`, `wild`,
+  `wild4`, `wild6`, `wild10`. Black cards have `color: "wild"`; the colour in
+  play is `game.color`.
+* Phases: `turn` (play/draw, or stack/draw/challenge when `pending > 0`),
+  `color` (choose a colour), `keep` (keep or play the drawn black plus),
+  `over`.
+* Teams sit alternately (seats 0/2 vs 1/3 in 2v2).
+* `rev` only grows; ignore any state with a lower `rev` than you have.
+
+## Reconnecting
+
+The socket can drop (network change, server deploy). Reconnect, then call
+`tango.match.active`; if it returns a `match_id`, join it again and you get a
+`snapshot` with your seat and cards. A disconnected player's turns are played
+automatically with a short timer; after three missed turns they are out of
+the game and lose the full entry fee.

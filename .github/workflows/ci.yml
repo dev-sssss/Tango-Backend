@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "feature/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Server tests (unit, rules, cluster e2e)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tango
+          POSTGRES_PASSWORD: tango
+          POSTGRES_DB: tango_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tango" --health-interval 2s --health-timeout 2s --health-retries 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: Tests (rules engine, match handler, RPCs, engine, real-process cluster)
+        env:
+          TANGO_TEST_DB: postgres://tango:tango@127.0.0.1:5432/tango_e2e?sslmode=disable
+        run: go test -count=1 -timeout 15m ./...
+
+  infra:
+    name: Terraform, Ansible and image checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+      - run: terraform fmt -check -recursive infra/terraform
+      - run: terraform -chdir=infra/terraform init -backend=false
+      - run: terraform -chdir=infra/terraform validate
+      - run: pipx install ansible-core==2.16.14
+      - run: cd infra/ansible && ansible-playbook --syntax-check site.yml
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the arm64 server image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,9 @@
+# Shell scripts must keep LF endings (they run on Linux); Windows scripts CRLF.
+*.sh  text eol=lf
+*.py  text eol=lf
+*.j2  text eol=lf
+*.yml text eol=lf
+*.tf  text eol=lf
+*.go  text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf

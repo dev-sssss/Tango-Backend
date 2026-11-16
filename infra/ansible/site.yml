@@ -1,0 +1,13 @@
+# Configures the Tango non-prod server from a fresh Ubuntu 24.04 instance to a
+# running stack, and redeploys new server images without restarting games.
+# The deploy pipeline runs it on the server itself through AWS SSM:
+#   ansible-playbook -c local -i localhost, site.yml -e @vars.json
+- name: Tango Cards server
+  hosts: all
+  connection: local
+  become: true
+  gather_facts: true
+  roles:
+    - base
+    - docker
+    - tango

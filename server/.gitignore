@@ -1,0 +1,4 @@
+/bin/
+/tango-server
+*.test
+coverage.out

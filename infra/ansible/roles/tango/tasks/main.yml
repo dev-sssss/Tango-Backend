@@ -1,0 +1,249 @@
+- name: Check required variables
+  ansible.builtin.assert:
+    that:
+      - tango_image | length > 0
+      - hostname_public | length > 0
+      - ops_bucket | length > 0
+    fail_msg: "tango_image, hostname_public and ops_bucket must be passed in vars.json"
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+    owner: root
+    group: "{{ item.group | default('root') }}"
+  loop:
+    - { path: "{{ tango_dir }}", mode: "0755" }
+    - { path: "{{ tango_dir }}/bin", mode: "0755" }
+    - { path: "{{ tango_dir }}/config", mode: "0750", group: "65532" }
+    - { path: "{{ tango_dir }}/nginx", mode: "0755" }
+    - { path: "{{ tango_dir }}/certbot/www", mode: "0755" }
+    - { path: "{{ tango_dir }}/certbot/conf", mode: "0755" }
+
+- name: Helper scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ tango_dir }}/bin/{{ item }}"
+    mode: "0755"
+  loop: [get_params.py, backup.py, wait_node.sh]
+
+# ------------------------------------------------------------ secrets
+
+- name: Read secrets from SSM Parameter Store
+  ansible.builtin.command: "{{ tango_dir }}/bin/get_params.py {{ param_path }} {{ aws_region }}"
+  register: params
+  changed_when: false
+  no_log: true
+
+- name: Keep secrets in memory only
+  ansible.builtin.set_fact:
+    secrets: "{{ params.stdout | from_json }}"
+  no_log: true
+
+- name: All secrets present
+  ansible.builtin.assert:
+    that: "item in secrets"
+    quiet: true
+  loop: [db_password, session_key, refresh_key, http_key, cluster_secret, server_key]
+
+# ------------------------------------------------------------ config
+
+- name: Server node config (readable only by root and the container user)
+  ansible.builtin.template:
+    src: node.yml.j2
+    dest: "{{ tango_dir }}/config/node.yml"
+    owner: root
+    group: "65532"
+    mode: "0640"
+  no_log: true
+  register: node_config
+
+- name: Compose environment file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ tango_dir }}/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ tango_dir }}/docker-compose.yml"
+    mode: "0644"
+
+- name: Is there a TLS certificate already?
+  ansible.builtin.stat:
+    path: "{{ tango_dir }}/certbot/conf/live/tango/fullchain.pem"
+  register: cert
+
+- name: Certificate identifier (own domain, or the server's IP address)
+  ansible.builtin.set_fact:
+    cert_args: >-
+      {{ ('--ip-address ' ~ hostname_public ~ ' --preferred-profile shortlived')
+         if hostname_public is match('^[0-9.]+$') else ('-d ' ~ hostname_public) }}
+
+- name: Nginx config
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ tango_dir }}/nginx/nginx.conf"
+    mode: "0644"
+  vars:
+    tls_enabled: "{{ cert.stat.exists }}"
+  register: nginx_config
+
+# ------------------------------------------------------------ images
+
+- name: Pull images
+  ansible.builtin.command: docker compose --project-directory {{ tango_dir }} --profile tools pull --quiet
+  changed_when: false
+  retries: 3
+  delay: 10
+  register: pull
+  until: pull.rc == 0
+
+# ------------------------------------------------------------ database
+
+- name: Database up
+  ansible.builtin.command: docker compose --project-directory {{ tango_dir }} up -d --wait postgres
+  register: pg
+  changed_when: "'Started' in pg.stderr or 'Created' in pg.stderr"
+
+- name: Database schema (additive migrations, safe while old nodes run)
+  ansible.builtin.command: docker compose --project-directory {{ tango_dir }} run --rm migrate
+  changed_when: false
+
+# ------------------------------------------------------------ game nodes
+# One node at a time: Compose stops the old container with SIGTERM, the node
+# drains (its live matches move to the other node within a tick, sockets
+# reconnect through the other node), then the new container starts.
+
+- name: Roll out game nodes one at a time
+  ansible.builtin.include_tasks: node.yml
+  loop: "{{ tango_nodes }}"
+  loop_control:
+    loop_var: tango_node
+
+- name: Nginx up
+  ansible.builtin.command: docker compose --project-directory {{ tango_dir }} up -d nginx
+  register: nginx_up
+  changed_when: "'Started' in nginx_up.stderr or 'Recreated' in nginx_up.stderr"
+
+- name: Reload nginx (new config, new node addresses)
+  ansible.builtin.command: docker compose --project-directory {{ tango_dir }} exec -T nginx nginx -s reload
+  changed_when: true
+  when: nginx_config.changed or nodes_changed | default(false)
+
+# ------------------------------------------------------------ TLS
+
+- name: Issue the TLS certificate (Let's Encrypt)
+  ansible.builtin.command: >
+    docker compose --project-directory {{ tango_dir }} run --rm certbot certonly
+    --webroot -w /var/www/certbot --cert-name tango {{ cert_args }}
+    --register-unsafely-without-email --agree-tos --non-interactive --keep-until-expiring
+    {{ '--staging' if letsencrypt_staging else '' }}
+  register: certbot
+  when: not cert.stat.exists
+  failed_when: false
+  retries: 2
+  delay: 15
+  until: certbot.rc == 0
+
+- name: Certificate result
+  ansible.builtin.debug:
+    msg: "{{ 'Certificate issued for ' ~ hostname_public if certbot.rc | default(1) == 0 else 'Certificate NOT issued yet; serving HTTP only. ' ~ (certbot.stdout | default('')) ~ (certbot.stderr | default('')) }}"
+  when: not cert.stat.exists
+
+- name: Renew short-lived IP certificates with two days left (not earlier)
+  ansible.builtin.lineinfile:
+    path: "{{ tango_dir }}/certbot/conf/renewal/tango.conf"
+    regexp: "^renew_before_expiry"
+    line: "renew_before_expiry = 2 days"
+    insertafter: "^version"
+  when: hostname_public is match('^[0-9.]+$') and (cert.stat.exists or certbot.rc | default(1) == 0)
+  failed_when: false
+
+- name: Switch nginx to HTTPS
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ tango_dir }}/nginx/nginx.conf"
+    mode: "0644"
+  vars:
+    tls_enabled: true
+  when: not cert.stat.exists and certbot.rc | default(1) == 0
+
+- name: Reload nginx with TLS
+  ansible.builtin.command: docker compose --project-directory {{ tango_dir }} exec -T nginx nginx -s reload
+  when: not cert.stat.exists and certbot.rc | default(1) == 0
+  changed_when: true
+
+# ------------------------------------------------------------ timers
+
+- name: Systemd units (certificate renewal, nightly backup)
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: "0644"
+  loop:
+    - name: tango-certbot-renew.service
+      content: |
+        [Unit]
+        Description=Renew the Tango TLS certificate
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/docker compose --project-directory {{ tango_dir }} run --rm certbot renew --webroot -w /var/www/certbot --quiet
+        ExecStartPost=/usr/bin/docker compose --project-directory {{ tango_dir }} exec -T nginx nginx -s reload
+    - name: tango-certbot-renew.timer
+      content: |
+        [Unit]
+        Description=Renew the Tango TLS certificate twice a day
+        [Timer]
+        OnCalendar=*-*-* 03,15:17:00
+        RandomizedDelaySec=1800
+        Persistent=true
+        [Install]
+        WantedBy=timers.target
+    - name: tango-backup.service
+      content: |
+        [Unit]
+        Description=Back up the Tango database to S3
+        [Service]
+        Type=oneshot
+        ExecStart={{ tango_dir }}/bin/backup.py {{ ops_bucket }} {{ aws_region }} {{ tango_dir }}
+    - name: tango-backup.timer
+      content: |
+        [Unit]
+        Description=Nightly Tango database backup
+        [Timer]
+        OnCalendar=*-*-* 02:30:00
+        Persistent=true
+        [Install]
+        WantedBy=timers.target
+  register: units
+
+- name: Enable timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: "{{ units.changed }}"
+  loop: [tango-certbot-renew.timer, tango-backup.timer]
+
+# ------------------------------------------------------------ checks
+
+- name: Public health check
+  ansible.builtin.uri:
+    url: "{{ 'https' if (cert.stat.exists or certbot.rc | default(1) == 0) else 'http' }}://{{ hostname_public }}/healthcheck"
+    status_code: 200
+  register: health
+  retries: 20
+  delay: 3
+  until: health.status == 200
+
+- name: Remove old images (keeps the disk small)
+  ansible.builtin.command: docker image prune -af --filter "until=72h"
+  changed_when: false
+
+- name: Deployed
+  ansible.builtin.debug:
+    msg: "Tango server {{ tango_image }} is live at {{ 'https' if (cert.stat.exists or certbot.rc | default(1) == 0) else 'http' }}://{{ hostname_public }}"
