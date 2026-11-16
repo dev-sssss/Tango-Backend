@@ -1,13 +1,3 @@
-# Terraform
-**/.terraform/
-*.tfstate
-*.tfstate.*
-tfplan
-*.tfplan
-.terraform.lock.hcl.bak
-# Ansible
-infra/ansible/vars.json
-*.retry
 # Build output
 server/bin/
 server/tango-server

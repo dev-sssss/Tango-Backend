@@ -1,0 +1,169 @@
+name: Deploy to EC2
+
+# Press "Run workflow". One run:
+#   1. tests the server
+#   2. builds the server image (amd64 + arm64) and pushes it to GitHub
+#      Container Registry (ghcr.io/dev-sssss/tango-backend)
+#   3. connects to your EC2 over SSH and runs deploy/scripts/deploy.sh:
+#      installs Docker if needed and starts/updates the Docker Compose stack
+#      (Postgres, two game nodes, nginx + HTTPS) in /opt/tango; game nodes
+#      restart one at a time so no live match is interrupted
+#   4. checks the server from outside (HTTPS, sign-in, RPCs)
+#
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   EC2_HOST      the Elastic IP of the instance
+#   EC2_USER      SSH user (ubuntu on Ubuntu, ec2-user on Amazon Linux)
+#   EC2_SSH_KEY   the private key (.pem file contents) for that user
+# Optional repository variable:
+#   TANGO_DOMAIN  a domain pointing at the Elastic IP (otherwise the IP is used)
+# The EC2 security group must allow 22 (SSH), 80 and 443.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Skip the test job (only for urgent re-deploys)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/dev-sssss/tango-backend
+
+jobs:
+  test:
+    name: 1. Tests
+    if: ${{ !inputs.skip_tests }}
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tango
+          POSTGRES_PASSWORD: tango
+          POSTGRES_DB: tango_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tango" --health-interval 2s --health-timeout 2s --health-retries 20
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - run: go vet ./...
+      - env:
+          TANGO_TEST_DB: postgres://tango:tango@127.0.0.1:5432/tango_e2e?sslmode=disable
+        run: go test -count=1 -timeout 15m ./...
+
+  image:
+    name: 2. Server image → ghcr.io
+    needs: [test]
+    if: ${{ always() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          echo "image=${IMAGE}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            VERSION=${{ github.sha }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: 3. Deploy on EC2 (Docker Compose)
+    needs: [image]
+    if: ${{ always() && needs.image.result == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+      TANGO_HOST: ${{ vars.TANGO_DOMAIN || secrets.EC2_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check secrets
+        run: |
+          missing=""
+          [ -n "$EC2_HOST" ] || missing="$missing EC2_HOST"
+          [ -n "$EC2_USER" ] || missing="$missing EC2_USER"
+          [ -n "$EC2_SSH_KEY" ] || missing="$missing EC2_SSH_KEY"
+          if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing"; exit 1; fi
+      - name: SSH key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.pem
+          chmod 600 ~/.ssh/ec2.pem
+          ssh-keyscan -T 15 -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<EOF
+          Host ec2
+            HostName $EC2_HOST
+            User $EC2_USER
+            IdentityFile ~/.ssh/ec2.pem
+            ServerAliveInterval 30
+            ConnectTimeout 20
+          EOF
+          ssh ec2 'echo "connected to $(hostname) ($(uname -m))"'
+      - name: Upload deploy files
+        run: |
+          tar -czf /tmp/tango-deploy.tgz -C deploy .
+          scp -q /tmp/tango-deploy.tgz ec2:/tmp/tango-deploy.tgz
+          ssh ec2 'rm -rf /tmp/tango-deploy && mkdir -p /tmp/tango-deploy && tar -xzf /tmp/tango-deploy.tgz -C /tmp/tango-deploy && rm -f /tmp/tango-deploy.tgz'
+      - name: Docker on the server
+        run: ssh ec2 'sudo bash /tmp/tango-deploy/scripts/install-docker.sh'
+      - name: Deploy
+        run: |
+          # Short-lived registry login, only for this deploy.
+          echo "${{ secrets.GITHUB_TOKEN }}" | ssh ec2 "sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin" >/dev/null
+          ssh ec2 "sudo TANGO_IMAGE='${{ needs.image.outputs.image }}' TANGO_HOST='${TANGO_HOST}' bash /tmp/tango-deploy/scripts/deploy.sh"
+      - name: Registry logout
+        if: always()
+        run: ssh ec2 'sudo docker logout ghcr.io >/dev/null 2>&1; rm -rf /tmp/tango-deploy' || true
+      - name: Smoke test from outside
+        run: |
+          key=$(ssh ec2 "sudo grep '^SERVER_KEY=' /opt/tango/.env | cut -d= -f2")
+          scheme=$(ssh ec2 "sudo awk '/Scheme/{print \$3}' /opt/tango/connection.txt")
+          bash deploy/scripts/smoke-test.sh "${scheme}://${TANGO_HOST}" "$key"
+          {
+            echo "## Tango Cards server is live"
+            echo
+            echo "| Unity / Nakama client setting | Value |"
+            echo "|---|---|"
+            echo "| Scheme | \`${scheme}\` |"
+            echo "| Host | \`${TANGO_HOST}\` |"
+            echo "| Port | \`$([ "$scheme" = https ] && echo 443 || echo 80)\` |"
+            echo "| Server key | \`${key}\` |"
+            echo "| Health check | ${scheme}://${TANGO_HOST}/healthcheck |"
+            echo
+            echo "Image: \`${{ needs.image.outputs.image }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

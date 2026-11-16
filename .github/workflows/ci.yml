@@ -38,25 +38,43 @@ jobs:
           TANGO_TEST_DB: postgres://tango:tango@127.0.0.1:5432/tango_e2e?sslmode=disable
         run: go test -count=1 -timeout 15m ./...
 
-  infra:
-    name: Terraform, Ansible and image checks
+  compose:
+    name: Docker Compose stack (deploy script, nginx, rolling update)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.10.5
-      - run: terraform fmt -check -diff -recursive infra/terraform
-      - run: terraform -chdir=infra/terraform init -backend=false
-      - run: terraform -chdir=infra/terraform validate
-      - run: pipx install ansible-core==2.16.14
-      - run: cd infra/ansible && ansible-playbook --syntax-check site.yml
+      - name: Script checks
+        run: |
+          bash -n deploy/scripts/*.sh
+          shellcheck -S warning deploy/scripts/*.sh
+      - name: Build the server image
+        run: docker build -t tango-local:ci1 --build-arg BUILD_TIME=$(date +%s) server
+      - name: First deploy (what the EC2 deploy runs)
+        run: sudo TANGO_IMAGE=tango-local:ci1 TANGO_HOST=127.0.0.1 TANGO_TLS=off TANGO_PULL=0 bash deploy/scripts/deploy.sh
+      - name: Smoke test
+        run: bash deploy/scripts/smoke-test.sh http://127.0.0.1 "$(sudo grep '^SERVER_KEY=' /opt/tango/.env | cut -d= -f2)"
+      - name: Rolling update to a new image
+        run: |
+          docker build -t tango-local:ci2 --build-arg BUILD_TIME=$(date +%s) server
+          sudo TANGO_IMAGE=tango-local:ci2 TANGO_HOST=127.0.0.1 TANGO_TLS=off TANGO_PULL=0 bash deploy/scripts/deploy.sh
+          docker inspect --format '{{.Config.Image}}' tango-tango-node1-1 tango-tango-node2-1 | grep -c ci2 | grep -q 2
+          bash deploy/scripts/smoke-test.sh http://127.0.0.1 "$(sudo grep '^SERVER_KEY=' /opt/tango/.env | cut -d= -f2)"
+      - name: Backup script
+        run: sudo TANGO_DIR=/opt/tango /opt/tango/bin/backup.sh && sudo ls -l /opt/tango/backups
+      - name: Logs on failure
+        if: failure()
+        run: sudo docker compose --project-directory /opt/tango logs --tail 100 || true
+
+  image:
+    name: Multi-arch image build (not pushed)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build the arm64 server image (not pushed)
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: server
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max

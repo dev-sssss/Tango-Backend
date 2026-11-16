@@ -1,0 +1,97 @@
+# Tango Cards server stack. Copied to /opt/tango by scripts/deploy.sh, which
+# also writes /opt/tango/.env (image + generated secrets) and the configs.
+#
+#   postgres     database (accounts, wallets, storage, leaderboards, cluster state)
+#   tango-node1  game server node (HTTP API + WebSocket + match host)
+#   tango-node2  second node: deploys restart one node at a time and live
+#                matches move to the other node, so no game is interrupted
+#   nginx        TLS, WebSocket upgrade, load balancing, rate limits
+#   certbot      issues/renews the Let's Encrypt certificate (run on demand)
+name: tango
+
+x-node: &node
+  image: ${TANGO_IMAGE:?TANGO_IMAGE must be set in .env}
+  restart: unless-stopped
+  stop_grace_period: 45s
+  depends_on:
+    postgres:
+      condition: service_healthy
+  volumes:
+    - ./config/node.yml:/etc/tango/node.yml:ro
+  networks: [tango]
+  ulimits:
+    nofile: { soft: 65536, hard: 65536 }
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tango
+      POSTGRES_DB: tango
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "max_connections=200"]
+    shm_size: 256mb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tango -d tango"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [tango]
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+
+  migrate:
+    <<: *node
+    restart: "no"
+    command: ["migrate", "up", "--config", "/etc/tango/node.yml"]
+    profiles: ["tools"]
+
+  tango-node1:
+    <<: *node
+    command: ["--config", "/etc/tango/node.yml", "--name", "node1", "--cluster.advertise_address", "tango-node1:7352"]
+    ports:
+      - "127.0.0.1:7361:7351" # admin/health, local only
+
+  tango-node2:
+    <<: *node
+    command: ["--config", "/etc/tango/node.yml", "--name", "node2", "--cluster.advertise_address", "tango-node2:7352"]
+    ports:
+      - "127.0.0.1:7362:7351"
+
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+    networks: [tango]
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+
+  certbot:
+    image: certbot/certbot:latest
+    profiles: ["tools"]
+    volumes:
+      - ./certbot/www:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+
+volumes:
+  pgdata: {}
+
+networks:
+  tango:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
