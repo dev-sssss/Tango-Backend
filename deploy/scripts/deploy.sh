@@ -82,7 +82,7 @@ set_env TANGO_IMAGE "$TANGO_IMAGE"
 set_env TANGO_HOST "$TANGO_HOST"
 
 # Public ports, decided once on the first deploy and then kept: 80/443 when
-# they are free (HTTPS with Let's Encrypt), otherwise 7350 (plain HTTP) so
+# they are free (HTTPS with Let's Encrypt), otherwise 8350 (plain HTTP) so
 # whatever already uses 80/443 on this server keeps working.
 if ! grep -q '^HTTP_PORT=' "$envfile"; then
   if [ -n "${TANGO_HTTP_PORT:-}" ]; then
@@ -90,7 +90,12 @@ if ! grep -q '^HTTP_PORT=' "$envfile"; then
   elif port_free 80 && port_free 443; then
     hp=80; sp=443
   else
-    hp=7350; sp=7443
+    # 80/443 belong to another stack: first free fallback port (7350 is
+    # avoided because Nakama-based servers use it).
+    hp=""; sp=""
+    for p in 8350 8450 9350 9450; do port_free "$p" && { hp=$p; break; }; done
+    for p in 8443 9443 7443 10443; do port_free "$p" && { sp=$p; break; }; done
+    [ -n "$hp" ] && [ -n "$sp" ] || { echo "ERROR: no free port found for Tango; set TANGO_HTTP_PORT" >&2; exit 1; }
     echo "Ports 80/443 are used by something else on this server; Tango will listen on port $hp (HTTP)."
   fi
   set_env HTTP_PORT "$hp"

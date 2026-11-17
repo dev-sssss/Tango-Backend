@@ -31,10 +31,11 @@ Actions):
 
 Optional repository variables: `EC2_DEPLOY_PATH` (your Tango folder on the
 server; if not set, the workflow uses the one folder named like `*tango*` in
-the SSH user's home, `/opt` or `/srv`) and `TANGO_DOMAIN`.
+`/root`, the SSH user's home, `/opt` or `/srv`, or creates
+`/root/tango-backend`) and `TANGO_DOMAIN`.
 
 Security group: inbound **22** (SSH from GitHub Actions) and either **80 +
-443** (when nothing else on the server uses them: HTTPS) or **7350** (used
+443** (when nothing else on the server uses them: HTTPS) or **8350** (used
 automatically when 80/443 already belong to another stack: plain HTTP).
 
 **Every deploy:** Actions → **Deploy to EC2** → **Run workflow**. It tests the

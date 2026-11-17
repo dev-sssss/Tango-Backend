@@ -17,11 +17,11 @@ name: Deploy to EC2
 #   EC2_SSH_KEY   the private key (.pem file contents) for that user
 # Optional repository variables:
 #   EC2_DEPLOY_PATH  the Tango folder on the server. If not set, the workflow
-#                    finds the one folder named like "*tango*" in the SSH
-#                    user's home, /opt or /srv.
+#                    uses the one folder named like "*tango*" in /root, the
+#                    SSH user's home, /opt or /srv, or creates /root/tango-backend.
 #   TANGO_DOMAIN     a domain pointing at the Elastic IP (otherwise the IP)
 # Security group: 22 (SSH) and either 80+443 (if free on the server: HTTPS)
-# or 7350 (used when 80/443 already belong to another stack: HTTP).
+# or 8350 (used when 80/443 already belong to another stack: HTTP).
 
 on:
   workflow_dispatch:
@@ -139,24 +139,23 @@ jobs:
             ConnectTimeout 20
           EOF
           ssh ec2 'echo "connected to $(hostname) ($(uname -m))"'
-      - name: Find the Tango folder on the server
+      - name: Find or create the Tango folder on the server
         id: dir
         env:
           DEPLOY_PATH: ${{ vars.EC2_DEPLOY_PATH }}
         run: |
           dir="$DEPLOY_PATH"
           if [ -z "$dir" ]; then
-            found=$(ssh ec2 'find ~ /opt /srv -mindepth 1 -maxdepth 2 -type d -iname "*tango*" -not -path "*/.*" 2>/dev/null' | sort -u)
+            found=$(ssh ec2 'sudo find /root "$HOME" /opt /srv -mindepth 1 -maxdepth 2 -type d -iname "*tango*" -not -path "*/.*" 2>/dev/null' | sort -u)
             n=$(printf '%s' "$found" | grep -c . || true)
-            if [ "$n" != 1 ]; then
-              echo "::error::Could not pick the Tango folder automatically (found $n):"
-              printf '%s\n' "$found"
-              echo "Set the repository variable EC2_DEPLOY_PATH to the folder's full path."
-              exit 1
-            fi
-            dir=$found
+            case "$n" in
+              0) dir=/root/tango-backend; echo "No Tango folder yet: creating $dir" ;;
+              1) dir=$found ;;
+              *) echo "::error::Found more than one Tango folder:"; printf '%s\n' "$found"
+                 echo "Set the repository variable EC2_DEPLOY_PATH to the one to use."; exit 1 ;;
+            esac
           fi
-          ssh ec2 "test -d '$dir'" || { echo "::error::Folder $dir does not exist on the server"; exit 1; }
+          ssh ec2 "sudo mkdir -p '$dir'"
           echo "Deploying into $dir"
           echo "path=$dir" >> "$GITHUB_OUTPUT"
       - name: Upload deploy files
