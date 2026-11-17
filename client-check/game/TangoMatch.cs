@@ -24,10 +24,10 @@ namespace UnoGame.Online
         // Server → app op codes (see the backend's docs/CLIENT_PROTOCOL.md).
         public const long OpSnapshot = 100, OpLobby = 101, OpGameStart = 102, OpTurn = 103, OpCardPlayed = 104, OpCardsDrawn = 105,
             OpColorChosen = 106, OpTango = 107, OpHammer = 108, OpChallenge = 109, OpDrawnChoice = 110, OpPlayerStatus = 111,
-            OpEmote = 112, OpGameOver = 113, OpRematch = 114, OpError = 115;
+            OpEmote = 112, OpGameOver = 113, OpRematch = 114, OpError = 115, OpEffect = 116;
         // App → server.
         public const long SendPlay = 1, SendDraw = 2, SendKeepOrPlay = 3, SendTango = 4, SendHammer = 5, SendChallenge = 6,
-            SendEmote = 7, SendRematch = 8, SendSnapshot = 9, SendForfeit = 10, SendChooseColor = 11, SendStart = 12;
+            SendEmote = 7, SendRematch = 8, SendSnapshot = 9, SendForfeit = 10, SendChooseColor = 11, SendStart = 12, SendSwap = 13;
         const int EventLimit = 96;
 
         public string MatchId { get; private set; } = "";
@@ -129,6 +129,18 @@ namespace UnoGame.Online
                 case OpDrawnChoice:
                     changed = true;
                     break;
+                case OpEffect:
+                    // No Mercy cards and the match clock, named as the table's animations expect them.
+                    switch (type)
+                    {
+                        case "skip_all": Emit("skipAll", seat, -1, (int?)m["skipped"] ?? 1); break;
+                        case "discard_all": Emit("discardAll", seat, -1, ((int?)m["count"] ?? 0) + 1, (string)m["color"]); break;
+                        case "rotate": Emit("rotate0", seat, -1, (int?)m["dir"] ?? lastDir); break;
+                        case "swap": Emit("swap7", seat, (int?)m["target"] ?? -1, 0); break;
+                        case "time_up": Emit("timeUp", seat, -1, (int?)m["points"] ?? 0); break;
+                    }
+                    changed = true;
+                    break;
                 case OpPlayerStatus:
                     if (State?["players"] is JArray list && seat >= 0 && seat < list.Count && list[seat] is JObject p)
                     {
@@ -208,7 +220,9 @@ namespace UnoGame.Online
             snap.Preset = PresetOf((string)State["mode"], teams);
             snap.ServerTimeUnixMs = ServerTimeMs;
             snap.TurnDeadlineUnixMs = Started && Status == "PLAYING" ? (long?)State["game"]?["deadline_ms"] ?? 0 : 0;
-            snap.TurnSeconds = (int?)State["settings"]?["turn_seconds"] ?? 15;
+            snap.TurnSeconds = (int?)State["settings"]?["turn_seconds"] ?? 10;
+            int minutes = (int?)State["settings"]?["match_minutes"] ?? 0;
+            snap.MatchSeconds = (minutes > 0 ? minutes : (string)State["mode"] == "no_mercy" ? 5 : 3) * 60;
             foreach (var p in players.OfType<JObject>()) snap.Players.Add(PlayerOf(p));
             snap.View = Started ? View() : null;
             return snap;
@@ -249,7 +263,7 @@ namespace UnoGame.Online
                 MatchId = MatchId + ":" + ((int?)State["round"] ?? 1), RoomCode = (string)State["room_code"] ?? "",
                 Mode = teams ? "duo" : players.Count == 2 ? "duel" : players.Count == 4 ? "solo4" : "room",
                 Preset = PresetOf((string)State["mode"], teams),
-                Phase = over ? "matchOver" : phase == "keep" ? "drawnWild" : phase == "color" ? "chooseColor" : "playing",
+                Phase = over ? "matchOver" : phase == "keep" ? "drawnWild" : phase == "color" ? "chooseColor" : phase == "swap" ? "swap7" : "playing",
                 ActiveColor = (string)g["color"] ?? "", Message = "", Revision = Revision, CurrentSeat = phaseSeat, TurnId = turnId,
                 LocalSeat = Math.Max(0, me), Direction = (int?)g["dir"] ?? 1, WinnerSeat = WinnerSeat,
                 RoundPoints = Results.Where(r => !r.Winner).Sum(r => r.Points), TargetScore = 0,
@@ -258,8 +272,11 @@ namespace UnoGame.Online
                 CanPass = mine && phase == "keep",
                 CanChooseColor = mine && (phase == "keep" || phase == "color"),
                 CanChallenge = mine && ((bool?)g["can_challenge"] ?? false),
-                EndsAtUnixMs = 0, TimeUp = false
+                CanChooseSwap = mine && phase == "swap",
+                EndsAtUnixMs = (long?)g["ends_at_ms"] ?? 0, TimeUp = (string)g["over_reason"] == "time_up"
             };
+            if (v.CanChooseSwap && g["swap_targets"] is JArray swapTargets)
+                foreach (var target in swapTargets) v.SwapTargets.Add((int)target);
             v.ChallengeSeat = v.CanChallenge ? lastPlusSeat : -1;
             v.CanCallUno = !over && !tango && !removed && ((mine && phase == "turn" && hand.Count == 2) || (hand.Count == 1 && vulnerable));
             if (mine && phase == "turn" && g["playable"] is JArray playable)
@@ -308,6 +325,7 @@ namespace UnoGame.Online
                 case "uno": return (SendTango, null);
                 case "catch": return (SendHammer, new Dictionary<string, object> { { "seat", action.TargetSeat } });
                 case "challenge": return (SendChallenge, null);
+                case "swap": return (SendSwap, new Dictionary<string, object> { { "seat", action.TargetSeat } });
                 default: return null;
             }
         }
@@ -345,6 +363,8 @@ namespace UnoGame.Online
                 case "wild4": kind = "draw4"; break;
                 case "wild6": kind = "draw6"; break;
                 case "wild10": kind = "draw10"; break;
+                case "skip_all": kind = "skipAll"; break;
+                case "discard_all": kind = "discardAll"; break;
             }
             return new Card { Id = ((int)c["id"]).ToString(), Color = (string)c["color"] ?? "wild", Kind = kind, Number = (int?)c["value"] ?? 0 };
         }
@@ -361,6 +381,7 @@ namespace UnoGame.Online
                 case "CANNOT_CHALLENGE": return "There is nothing to challenge right now.";
                 case "TOO_MANY_CARDS": return "TANGO! works when you have two cards or fewer.";
                 case "BAD_COLOR": return "Choose red, yellow, green or blue.";
+                case "BAD_TARGET": return "Choose another player to swap hands with.";
                 case "EMOTES_OFF": return "Emotes are switched off at this table.";
                 case "GAME_OVER": return "The match has finished.";
                 case "NOT_IN_GAME": return "You are no longer in this match.";

@@ -20,6 +20,8 @@ namespace UnoGame.Online
         public string Host = "tango-backend.sssss.co.in";
         public int Port = 9443;
         public string ServerKey = "";
+        /// <summary>The OAuth "Web application" client ID used for Google sign-in (empty = not set up).</summary>
+        public string GoogleWebClientId = "";
         public string BaseUrl => Scheme + "://" + Host + ((Scheme == "https" && Port == 443) || (Scheme == "http" && Port == 80) ? "" : ":" + Port);
         public string SocketUrl => (Scheme == "https" ? "wss" : "ws") + "://" + Host + ((Scheme == "https" && Port == 443) || (Scheme == "http" && Port == 80) ? "" : ":" + Port) + "/ws";
     }
@@ -112,6 +114,30 @@ namespace UnoGame.Online
 
         public void Restore(string token, string refresh) { Session = TangoSession.From(token, refresh); }
 
+        /// <summary>Signs in with a Google ID token (creates the account the first time).</summary>
+        public async Task<TangoSession> AuthenticateGoogle(string idToken)
+        {
+            var body = new JObject { ["token"] = idToken };
+            var res = await Send(HttpMethod.Post, "/v2/account/authenticate/google?create=true", body.ToString(Formatting.None), basic: true);
+            Session = TangoSession.From((string)res["token"], (string)res["refresh_token"]);
+            Session.Created = (bool?)res["created"] ?? false;
+            return Session;
+        }
+
+        /// <summary>Adds Google sign-in to the signed-in account. Throws TangoHttpException 409 when that Google account is another player's.</summary>
+        public async Task LinkGoogle(string idToken)
+        {
+            await EnsureSession();
+            await Send(HttpMethod.Post, "/v2/account/link/google", new JObject { ["token"] = idToken }.ToString(Formatting.None), basic: false);
+        }
+
+        /// <summary>The account record (user id, Google id, devices).</summary>
+        public async Task<JObject> GetAccount()
+        {
+            await EnsureSession();
+            return await Send(HttpMethod.Get, "/v2/account", null, basic: false);
+        }
+
         /// <summary>Keeps the access token fresh (refreshes it when it has under two minutes left).</summary>
         public async Task EnsureSession()
         {
@@ -198,7 +224,12 @@ namespace UnoGame.Online
         }
 
         /// <summary>Joins a match and returns once the server has accepted the seat.</summary>
-        public Task<JObject> JoinMatch(string matchId) => Request(new JObject { ["match_join"] = new JObject { ["match_id"] = matchId } });
+        public Task<JObject> JoinMatch(string matchId, JObject metadata = null)
+        {
+            var join = new JObject { ["match_id"] = matchId };
+            if (metadata != null && metadata.Count > 0) join["metadata"] = metadata;
+            return Request(new JObject { ["match_join"] = join });
+        }
 
         public Task<JObject> LeaveMatch(string matchId) => Request(new JObject { ["match_leave"] = new JObject { ["match_id"] = matchId } });
 

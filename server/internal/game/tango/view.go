@@ -102,10 +102,18 @@ func (m *Match) flush(d game.Dispatcher) {
 func (m *Match) view(seat int) map[string]any {
 	s := m.s
 	players := make([]map[string]any, 0, len(s.Seats))
+	var plan []int
+	if s.Status == StatusWaiting {
+		plan = m.teamPlan() // teams as the room fills; seats are arranged at the start
+	}
 	for i, st := range s.Seats {
 		p := st.Player
+		team := TeamOf(s.Format, i)
+		if plan != nil {
+			team = plan[i]
+		}
 		pv := map[string]any{"seat": i, "user_id": p.UserID, "name": p.Name, "avatar": p.Avatar, "frame": p.Frame, "badge": p.Badge,
-			"card_back": p.CardBack, "trophies": p.Trophies, "level": LevelFor(p.Trophies), "team": TeamOf(s.Format, i),
+			"card_back": p.CardBack, "trophies": p.Trophies, "level": LevelFor(p.Trophies), "team": team,
 			"connected": p.Bot || st.Connected, "removed": p.Removed, "hand_count": len(p.Hand),
 			"tango": p.TangoArmed, "vulnerable": p.Vulnerable, "is_host": p.UserID == s.HostID}
 		if m.canSee(seat, i) {

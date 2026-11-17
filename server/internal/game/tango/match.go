@@ -95,6 +95,9 @@ type Seat struct {
 	LastHammerMs  int64          `json:"last_hammer_ms"`
 	BotHammerAt   int64          `json:"bot_hammer_at"`
 	Rematch       bool           `json:"rematch"`
+	// TeamWith is the player who invited this one into a team room; they
+	// are seated on the inviter's team when it has room.
+	TeamWith string `json:"team_with,omitempty"`
 }
 
 // State is the whole match, serialised for live handover and crash restore.
@@ -306,9 +309,71 @@ func (m *Match) JoinAttempt(mc *game.MatchContext, d game.Dispatcher, tick int64
 		name = p.Username
 	}
 	pl := &Player{UserID: p.UserID, Name: name, Avatar: prof.Avatar, Frame: prof.Frame, Badge: prof.Badge, CardBack: prof.CardBack, Trophies: prof.Trophies}
-	s.Seats = append(s.Seats, &Seat{Player: pl, ReservedUntil: m.nk.NowMs() + reserveMs})
+	seat := &Seat{Player: pl, ReservedUntil: m.nk.NowMs() + reserveMs}
+	if IsTeamFormat(s.Format) && metadata["team_with"] != p.UserID {
+		seat.TeamWith = metadata["team_with"]
+	}
+	s.Seats = append(s.Seats, seat)
 	m.updateLabel(d)
 	return true, ""
+}
+
+// teamPlan gives the team of every seat while the room fills: a player
+// invited by a teammate joins the inviter's team when it has room, everyone
+// else joins the smaller team (the first player's team on a tie). With
+// nobody invited this is the same as alternating seats.
+func (m *Match) teamPlan() []int {
+	s := m.s
+	plan := make([]int, len(s.Seats))
+	if !IsTeamFormat(s.Format) {
+		for i := range plan {
+			plan[i] = i
+		}
+		return plan
+	}
+	cap := m.maxSeats() / 2
+	count := [2]int{}
+	for i, st := range s.Seats {
+		team := 0
+		if count[1] < count[0] {
+			team = 1
+		}
+		if st.TeamWith != "" {
+			for j := 0; j < i; j++ {
+				if s.Seats[j].Player.UserID == st.TeamWith && count[plan[j]] < cap {
+					team = plan[j]
+				}
+			}
+		}
+		if count[team] >= cap {
+			team = 1 - team
+		}
+		plan[i] = team
+		count[team]++
+	}
+	return plan
+}
+
+// arrangeTeams seats a full team room so teams alternate around the table
+// (team = seat % 2) as the plan says.
+func (m *Match) arrangeTeams() {
+	s := m.s
+	if !IsTeamFormat(s.Format) || len(s.Seats) != m.maxSeats() {
+		return
+	}
+	plan := m.teamPlan()
+	var teams [2][]*Seat
+	for i, st := range s.Seats {
+		teams[plan[i]] = append(teams[plan[i]], st)
+	}
+	if len(teams[0]) != len(teams[1]) {
+		return
+	}
+	seats := make([]*Seat, 0, len(s.Seats))
+	for i := range teams[0] {
+		seats = append(seats, teams[0][i], teams[1][i])
+	}
+	s.Seats = seats
 }
 
 func (m *Match) Join(mc *game.MatchContext, d game.Dispatcher, tick int64, presences []game.Presence) {
@@ -373,6 +438,7 @@ func (m *Match) maybeStart(d game.Dispatcher, now int64) {
 			return
 		}
 	}
+	m.arrangeTeams()
 	s.Status, s.StartAtMs = StatusStarting, now+startCountdownMs
 	m.updateLabel(d)
 }
@@ -853,6 +919,9 @@ func (m *Match) settle(ctx context.Context) {
 		if r.Trophies > 0 {
 			_, _ = m.nk.LeaderboardRecordWrite(ctx, LeaderboardWeekly, r.UserID, st.Player.Name, int64(r.Trophies), 0, nil)
 		}
+		if r.Winner {
+			_, _ = m.nk.LeaderboardRecordWrite(ctx, LeaderboardWins, r.UserID, st.Player.Name, int64(p.Wins), 0, nil)
+		}
 	}
 }
 
@@ -860,6 +929,8 @@ func (m *Match) settle(ctx context.Context) {
 const (
 	LeaderboardTrophies = "trophies"        // total trophies (set)
 	LeaderboardWeekly   = "weekly_trophies" // trophies won this week (incr, resets Monday)
+	LeaderboardWins     = "wins"            // matches won, all time (set)
+	LeaderboardFriends  = "friends"         // not stored: the caller and their friends by trophies
 )
 
 func (m *Match) voteRematch(d game.Dispatcher, seat int, now int64) {

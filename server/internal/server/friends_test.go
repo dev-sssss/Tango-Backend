@@ -148,6 +148,26 @@ func TestFriendsRequestsBlocksAndPresence(t *testing.T) {
 	if inv := list(t, f, b)["invites"].([]any); len(inv) != 1 {
 		t.Fatalf("invites: %v", inv)
 	}
+	// The invite inbox carries the room's format; answering removes it.
+	if r, _ := f.RoomInvite(ctx, a, b, "123456", "classic|2v2"); r["success"] != true {
+		t.Fatalf("invite with format: %v", r)
+	}
+	inbox, err := f.RoomInvites(ctx, b)
+	if err != nil || len(inbox) != 1 || inbox[0]["room_code"] != "123456" || inbox[0]["mode"] != "classic" || inbox[0]["format"] != "2v2" {
+		t.Fatalf("inbox %v %v", inbox, err)
+	}
+	if err := f.RoomInviteDismiss(ctx, b, a); err != nil {
+		t.Fatal(err)
+	}
+	if inbox, _ := f.RoomInvites(ctx, b); len(inbox) != 0 {
+		t.Fatalf("after reply: %v", inbox)
+	}
+	// Player IDs are permanent: asking twice gives the same ID.
+	id1, _ := f.codeFor(ctx, a)
+	id2, _ := f.codeFor(ctx, a)
+	if !friendCodeRe.MatchString(id1) || id1 != id2 {
+		t.Fatalf("player id %q %q", id1, id2)
+	}
 	// Block: B disappears for A's searches, the friendship and invites go.
 	if r, _ := f.FriendAction(ctx, b, a, "block"); r["success"] != true {
 		t.Fatalf("block: %v", r)

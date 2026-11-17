@@ -48,7 +48,7 @@ with `"success": true` or `"success": false, "error": "<CODE>"`.
 
 | RPC id | Payload | Returns |
 |---|---|---|
-| `tango.profile.get` | `{}` | `profile` (name, avatar, frame, badge, card_back, table, trophies, wins, losses, games), `level`, `wallet {coins, diamonds}`. Call first after sign-in: creates the profile and the starting wallet (2,000 coins, 20 diamonds) once. |
+| `tango.profile.get` | `{}` | `profile` (name, avatar, frame, badge, card_back, table, trophies, wins, losses, games), `level`, `wallet {coins, diamonds}`, `player_id` (the permanent 8-character public ID, made with the account). Call first after sign-in: creates the profile, the player ID and the starting wallet (2,000 coins, 20 diamonds) once. |
 | `tango.profile.update` | `{"name":"Robin"}` and/or `{"tutorial_done":true}` | `profile`. Names 3–16 letters/digits/space/`_.-`. |
 | `tango.wallet.get` | `{}` | `wallet` |
 | `tango.shop.catalog` | `{}` | `items[] {id, category, name, price{coins\|diamonds}, rarity, owned}`, `iap_products[]` |
@@ -60,15 +60,19 @@ with `"success": true` or `"success": false, "error": "<CODE>"`.
 | `tango.dev.grant` | `{}` | +10,000 coins, +1,000 diamonds. **Non-prod only** (the tap-coins-three-times shortcut) |
 | `tango.match.quick_join` | `{"mode":"classic"\|"no_mercy","format":"1v1"\|"2v2"\|"4v4"\|"4p"\|"8p","fee":200}` | `match_id` → join it on the socket. Fees: 200, 400, 1000, 2000, 5000. `4p`/`8p`: everyone for themselves |
 | `tango.room.create` | `{"mode","format","fee":0,"settings":{"turn_seconds":15,"emotes":true,"spectators":false,"mic":false}}` | `room_code` (6 digits), `match_id` |
-| `tango.room.join` | `{"room_code":"123456"}` | `match_id`. Errors: `ROOM_NOT_FOUND`, `ROOM_STARTED`, `ROOM_FULL` |
+| `tango.room.join` | `{"room_code":"123456"}` | `match_id`. Errors: `ROOM_NOT_FOUND`, `ROOM_STARTED`, `ROOM_FULL`. Join the match with metadata `{"team_with":"<inviter user_id>"}` after accepting an invite to sit on the inviter's team (2v2/4v4) |
 | `tango.match.active` | `{}` | `match_id` of a game still running (rejoin after a crash), or `null` |
 | `tango.match.forfeit` | `{}` | leaves the running game for good |
 | `tango.friends.list` | `{}` | friends (name, avatar, frame, trophies, level, status online/in_game/offline, last_seen), requests, your 8-character **friend code** |
 | `tango.friends.find` | `{"query":"AB12CD34"}` | `player` (name, avatar, trophies, status) without sending anything; `not_found`, `self` |
 | `tango.friends.add` | `{"query":"AB12CD34"}` | sends a request (friend code or username) |
 | `tango.friends.action` | `{"user_id":"…","action":"accept"\|"decline"\|"cancel"\|"remove"\|"block"\|"unblock"}` | |
-| `tango.friends.invite` | `{"user_id":"…","room_code":"123456","mode":"classic"}` | invite shows in the friend's list |
-| `tango.leaderboard.get` | `{"id":"trophies"\|"weekly_trophies","limit":50}` | `records[]`, `me` |
+| `tango.friends.invite` | `{"user_id":"…","room_code":"123456","mode":"classic","format":"2v2"}` | invite shows in the friend's invites for 15 minutes; friends only (`not_friends`) |
+| `tango.friends.invites` | `{}` | `invites[] {from{user_id, display_name, avatar, trophies}, room_code, mode, format, sent_at, expires_at}`; the game polls this every few seconds off the table |
+| `tango.friends.invite_reply` | `{"user_id":"<inviter>"}` | removes the invite (joined or declined) |
+| `tango.leaderboard.get` | `{"id":"trophies"\|"weekly_trophies"\|"wins"\|"friends","limit":50}` | `records[] {rank, user_id, name, avatar, frame, level, score}`, `me {rank, score}`. `weekly_trophies` starts again every Monday; `friends` ranks you and your friends by trophies |
+| `tango.spin.status` | `{}` | `prizes[] {coins, diamonds}` (the wheel's slices in order), `free_left`, `ad_left`, `ad_wait_ms`, `next_reset_ms` |
+| `tango.spin.play` | `{}` (free spin) or `{"ad":true}` (after a rewarded ad) | `slice` the wheel stops on, `coins`, `diamonds`, `wallet`, plus the status fields. 1 free spin a day, 3 ad spins 30 s apart; the day starts at midnight India time. Errors: `NO_FREE_SPIN`, `DAILY_LIMIT`, `TOO_SOON` |
 | `tango.app.config` | `{}` | entry fees, ad limits, turn-time options, maintenance message |
 | `tango.account.delete` | `{"confirm":true}` | deletes the account (Play Store requirement) |
 

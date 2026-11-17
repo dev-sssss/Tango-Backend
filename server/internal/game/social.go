@@ -22,6 +22,13 @@ type Social interface {
 	ReferralClaim(ctx context.Context, userID, code, deviceID, source string) (map[string]any, error)
 	// RoomInvite asks a friend to join a private room.
 	RoomInvite(ctx context.Context, userID, friendID, roomCode, mode string) (map[string]any, error)
+	// RoomInvites lists the live room invites sent to userID (newest first).
+	RoomInvites(ctx context.Context, userID string) ([]map[string]any, error)
+	// RoomInviteDismiss removes the invite fromID sent to userID.
+	RoomInviteDismiss(ctx context.Context, userID, fromID string) error
+	// PlayerID returns the player's permanent public ID (the friend code),
+	// creating it on first use.
+	PlayerID(ctx context.Context, userID string) (string, error)
 }
 
 // SocialFrom returns nk's Social implementation, if any.

@@ -86,6 +86,34 @@ namespace UnoGame.Online
             return true;
         }
 
+        // ------------------------------------------------------------------ Google sign-in
+        /// <summary>True when this account can also be opened with Google.</summary>
+        public async Task<bool> HasGoogle()
+        {
+            var account = await Net.GetAccount();
+            return !string.IsNullOrEmpty((string)account["user"]?["google_id"]);
+        }
+
+        /// <summary>
+        /// Signs in with Google. A guest account gets Google added (progress is kept); if that Google account already belongs to
+        /// another player (e.g. a new phone), the game switches to that player's account. Returns true when it switched.
+        /// </summary>
+        public async Task<bool> SignInWithGoogle(string idToken)
+        {
+            bool switched = false;
+            try { await Net.LinkGoogle(idToken); }
+            catch (TangoHttpException ex) when (ex.Status == 409)
+            {
+                if (Match != null) await Leave();
+                await Net.AuthenticateGoogle(idToken);
+                switched = true;
+            }
+            save(TokenKey, Net.Session.Token); save(RefreshKey, Net.Session.RefreshToken);
+            if (switched) { await Net.ConnectSocket(); socketLost = false; }
+            await RefreshProfile();
+            return switched;
+        }
+
         // ------------------------------------------------------------------ profile, wallet, shop
         public async Task<CosmeticProfile> RefreshProfile()
         {
@@ -96,7 +124,7 @@ namespace UnoGame.Online
             var result = new CosmeticProfile
             {
                 Coins = (int?)wallet["coins"] ?? 0, Diamonds = (int?)wallet["diamonds"] ?? 0,
-                Name = (string)profile["name"] ?? "", Trophies = (int?)profile["trophies"] ?? 0, Level = (int?)p["level"] ?? 1,
+                Name = (string)profile["name"] ?? "", PlayerId = (string)p["player_id"] ?? "", Trophies = (int?)profile["trophies"] ?? 0, Level = (int?)p["level"] ?? 1,
                 Wins = (int?)profile["wins"] ?? 0, Games = (int?)profile["games"] ?? 0, TutorialDone = (bool?)profile["tutorial_done"] ?? false,
                 MatchRewardCoins = 0
             };
@@ -156,21 +184,20 @@ namespace UnoGame.Online
             return await JoinAndWait((string)r["match_id"]);
         }
 
-        public async Task<OnlineRoomSnapshot> CreateRoom(string mode, string format, int turnSeconds, bool emotes = true)
+        public async Task<OnlineRoomSnapshot> CreateRoom(string mode, string format, int turnSeconds, bool emotes = true, int matchMinutes = 0)
         {
-            var r = await Call("tango.room.create", new JObject
-            {
-                ["mode"] = mode, ["format"] = format, ["fee"] = 0,
-                ["settings"] = new JObject { ["turn_seconds"] = turnSeconds, ["emotes"] = emotes, ["spectators"] = false, ["mic"] = false }
-            });
+            var settings = new JObject { ["turn_seconds"] = turnSeconds, ["emotes"] = emotes, ["spectators"] = false, ["mic"] = false };
+            if (matchMinutes > 0) settings["match_minutes"] = matchMinutes;
+            var r = await Call("tango.room.create", new JObject { ["mode"] = mode, ["format"] = format, ["fee"] = 0, ["settings"] = settings });
             return await JoinAndWait((string)r["match_id"]);
         }
 
-        public async Task<OnlineRoomSnapshot> JoinRoom(string code)
+        /// <summary>Joins a friends room by its code. teamWith: the friend whose invite brought you (you sit on their team).</summary>
+        public async Task<OnlineRoomSnapshot> JoinRoom(string code, string teamWith = "")
         {
             string digits = new string((code ?? "").Where(char.IsDigit).ToArray());
             var r = await Call("tango.room.join", new JObject { ["room_code"] = digits });
-            return await JoinAndWait((string)r["match_id"]);
+            return await JoinAndWait((string)r["match_id"], string.IsNullOrEmpty(teamWith) ? null : new JObject { ["team_with"] = teamWith });
         }
 
         /// <summary>Rejoins a game that is still running for this player (after a crash or a lost connection).</summary>
@@ -182,13 +209,13 @@ namespace UnoGame.Online
             return await JoinAndWait(id);
         }
 
-        async Task<OnlineRoomSnapshot> JoinAndWait(string matchId)
+        async Task<OnlineRoomSnapshot> JoinAndWait(string matchId, JObject metadata = null)
         {
             if (string.IsNullOrEmpty(matchId)) throw new InvalidOperationException("The server did not return a table.");
             await EnsureConnected();
             lock (pumpLock) Match = new TangoMatch(matchId);
             save(MatchKey, matchId);
-            await Net.JoinMatch(matchId);
+            await Net.JoinMatch(matchId, metadata);
             var until = DateTime.UtcNow.AddSeconds(10);
             while (true)
             {
@@ -257,7 +284,46 @@ namespace UnoGame.Online
         public Task<JObject> AddFriend(string query) => Call("tango.friends.add", new JObject { ["query"] = query });
         public Task<JObject> FindFriend(string query) => Call("tango.friends.find", new JObject { ["query"] = query });
         public Task<JObject> FriendAction(string userId, string action) => Call("tango.friends.action", new JObject { ["user_id"] = userId, ["action"] = action });
-        public Task<JObject> InviteFriend(string userId, string roomCode, string mode) => Call("tango.friends.invite", new JObject { ["user_id"] = userId, ["room_code"] = roomCode, ["mode"] = mode });
+        public Task<JObject> InviteFriend(string userId, string roomCode, string mode, string format = "") => Call("tango.friends.invite", new JObject { ["user_id"] = userId, ["room_code"] = roomCode, ["mode"] = mode, ["format"] = format });
+        /// <summary>Room invites waiting for this player (newest first).</summary>
+        public Task<JObject> RoomInvites() => Call("tango.friends.invites");
+        /// <summary>Removes an invite once it is answered (joined or declined).</summary>
+        public Task<JObject> AnswerInvite(string fromUserId) => Call("tango.friends.invite_reply", new JObject { ["user_id"] = fromUserId });
+
+        // ------------------------------------------------------------------ rankings
+        /// <summary>Board "trophies", "weekly_trophies", "wins" or "friends": the top players and this player's place.</summary>
+        public async Task<RankBoard> Leaderboard(string id, int limit = 50)
+        {
+            var r = await Call("tango.leaderboard.get", new JObject { ["id"] = id, ["limit"] = limit });
+            var board = new RankBoard { Id = (string)r["id"] ?? id };
+            foreach (var e in (r["records"] as JArray ?? new JArray()).OfType<JObject>())
+            {
+                string avatar = (string)e["avatar"] ?? "", frame = (string)e["frame"] ?? "";
+                board.Rows.Add(new RankRow { Rank = (int?)e["rank"] ?? 0, UserId = (string)e["user_id"] ?? "", Name = (string)e["name"] ?? "Player",
+                    Avatar = avatar.StartsWith("avatar_") ? avatar.Substring(7) : avatar, Frame = frame.StartsWith("frame_") ? frame.Substring(6) : frame,
+                    Score = (long?)e["score"] ?? 0, Level = (int?)e["level"] ?? 1 });
+            }
+            if (r["me"] is JObject me) { board.MyRank = (int?)me["rank"] ?? 0; board.MyScore = (long?)me["score"] ?? 0; }
+            return board;
+        }
+
+        // ------------------------------------------------------------------ lucky spin
+        public async Task<SpinState> SpinStatus() => ReadSpin(await Call("tango.spin.status"));
+        /// <summary>Spins once (ad = an extra spin after a rewarded break). The server picks the slice and pays it.</summary>
+        public async Task<SpinState> Spin(bool ad)
+        {
+            var r = await Call("tango.spin.play", new JObject { ["ad"] = ad });
+            var st = ReadSpin(r);
+            await RefreshProfile();
+            return st;
+        }
+        static SpinState ReadSpin(JObject r)
+        {
+            var st = new SpinState { FreeLeft = (int?)r["free_left"] ?? 0, AdLeft = (int?)r["ad_left"] ?? 0, AdWaitMs = (long?)r["ad_wait_ms"] ?? 0,
+                NextResetUnixMs = (long?)r["next_reset_ms"] ?? 0, Slice = (int?)r["slice"] ?? -1, WonCoins = (int?)r["coins"] ?? 0, WonDiamonds = (int?)r["diamonds"] ?? 0 };
+            foreach (var p in (r["prizes"] as JArray ?? new JArray()).OfType<JObject>()) { st.PrizeCoins.Add((int?)p["coins"] ?? 0); st.PrizeDiamonds.Add((int?)p["diamonds"] ?? 0); }
+            return st;
+        }
 
         // ------------------------------------------------------------------ helpers
         /// <summary>Calls an RPC and throws with a readable message when the server refuses.</summary>
@@ -305,8 +371,11 @@ namespace UnoGame.Online
                 case "MAINTENANCE": return string.IsNullOrEmpty(message) ? "The server is under maintenance. Please try again soon." : message;
                 case "RATE_LIMITED": return "Too many tries. Wait a moment and try again.";
                 case "ALREADY_IN_MATCH": return "You are already at a table.";
-                case "DAILY_LIMIT": return "That's all the free coins for today.";
-                case "TOO_SOON": return "Free coins are on a short break. Try again in a moment.";
+                case "DAILY_LIMIT": return "That's all for today. Come back tomorrow!";
+                case "TOO_SOON": return "Just a moment, then try again.";
+                case "NO_FREE_SPIN": return "Today's free spin is used. Come back tomorrow for another!";
+                case "ROOM_CLOSED": return "That room has closed.";
+                case "not_friends": return "You can only invite your friends.";
                 case "NOT_FOUND": return "No player found with that ID.";
                 default: return string.IsNullOrEmpty(message) ? (code ?? "Request refused.").Replace('_', ' ').ToLowerInvariant() : message;
             }

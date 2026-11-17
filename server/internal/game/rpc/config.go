@@ -34,6 +34,12 @@ type AppConfig struct {
 	MinClientVersion   string   `json:"min_client_version"`
 	Formats            []string `json:"formats"`
 	Modes              []string `json:"modes"`
+	// Lucky spin: free spins and ad spins per day, the wheel's slices, and
+	// the offset of the day's start from UTC midnight (330 = India).
+	SpinFreePerDay   int         `json:"spin_free_per_day"`
+	SpinAdPerDay     int         `json:"spin_ad_per_day"`
+	SpinPrizes       []SpinPrize `json:"spin_prizes"`
+	SpinDayOffsetMin int         `json:"spin_day_offset_min"`
 }
 
 func defaultAppConfig() AppConfig {
@@ -42,6 +48,7 @@ func defaultAppConfig() AppConfig {
 		AdRewardMin: 250, AdRewardMax: 300, AdDailyCap: 10, AdCooldownSec: 30,
 		TurnSecondsOptions: []int{10, 15, 20, 30}, LobbyWaitSeconds: 15, MinClientVersion: "0.0.0",
 		Formats: []string{"1v1", "2v2", "4v4", "4p", "8p"}, Modes: []string{"classic", "no_mercy"},
+		SpinFreePerDay: 1, SpinAdPerDay: 3, SpinPrizes: defaultSpinPrizes(), SpinDayOffsetMin: 330,
 	}
 }
 

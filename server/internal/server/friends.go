@@ -262,29 +262,13 @@ func (f *Friends) FriendsList(ctx context.Context, userID string) (map[string]an
 		return nil, err
 	}
 
-	invites := []any{}
-	irows, err := f.db.Query(ctx, `SELECT `+profileCols+`, i.room_code, i.mode, i.create_time
-		FROM room_invite i JOIN users u ON u.id = i.from_id `+profileJoins+`
-		WHERE i.to_id = $1 AND i.create_time > now() - $2::interval
-		  AND EXISTS (SELECT 1 FROM friendship x WHERE x.user_id = $1 AND x.friend_id = i.from_id AND x.state = 0)
-		ORDER BY i.create_time DESC LIMIT 20`, userID, fmt.Sprintf("%d seconds", int(roomInviteTTL.Seconds())))
+	inv, err := f.roomInvites(ctx, userID, now)
 	if err != nil {
 		return nil, err
 	}
-	for irows.Next() {
-		var r friendRow
-		var room, mode string
-		var at time.Time
-		if err := irows.Scan(&r.UserID, &r.Username, &r.Name, &r.Avatar, &r.Frame, &r.Trophies, &r.LastSeen, &r.InMatch, &room, &mode, &at); err != nil {
-			irows.Close()
-			return nil, err
-		}
-		invites = append(invites, map[string]any{"from": r.public(now), "room_code": room, "mode": mode,
-			"expires_at": at.Add(roomInviteTTL).Unix()})
-	}
-	irows.Close()
-	if err := irows.Err(); err != nil {
-		return nil, err
+	invites := make([]any, 0, len(inv))
+	for _, i := range inv {
+		invites = append(invites, i)
 	}
 
 	var joined, rewarded, pending int
@@ -531,6 +515,47 @@ func (f *Friends) FriendAction(ctx context.Context, userID, otherID, action stri
 	return result, err
 }
 
+// roomInvites lists live invites to userID from players who are still friends.
+func (f *Friends) roomInvites(ctx context.Context, userID string, now time.Time) ([]map[string]any, error) {
+	invites := []map[string]any{}
+	irows, err := f.db.Query(ctx, `SELECT `+profileCols+`, i.room_code, i.mode, i.create_time
+		FROM room_invite i JOIN users u ON u.id = i.from_id `+profileJoins+`
+		WHERE i.to_id = $1 AND i.create_time > now() - $2::interval
+		  AND EXISTS (SELECT 1 FROM friendship x WHERE x.user_id = $1 AND x.friend_id = i.from_id AND x.state = 0)
+		ORDER BY i.create_time DESC LIMIT 20`, userID, fmt.Sprintf("%d seconds", int(roomInviteTTL.Seconds())))
+	if err != nil {
+		return nil, err
+	}
+	defer irows.Close()
+	for irows.Next() {
+		var r friendRow
+		var room, mode string
+		var at time.Time
+		if err := irows.Scan(&r.UserID, &r.Username, &r.Name, &r.Avatar, &r.Frame, &r.Trophies, &r.LastSeen, &r.InMatch, &room, &mode, &at); err != nil {
+			return nil, err
+		}
+		// mode is stored as "mode|format" ("classic|2v2"); older rows hold only the mode.
+		format := ""
+		if i := strings.IndexByte(mode, '|'); i >= 0 {
+			mode, format = mode[:i], mode[i+1:]
+		}
+		invites = append(invites, map[string]any{"from": r.public(now), "room_code": room, "mode": mode, "format": format,
+			"sent_at": at.Unix(), "expires_at": at.Add(roomInviteTTL).Unix()})
+	}
+	return invites, irows.Err()
+}
+
+// RoomInvites lists the live room invites sent to userID.
+func (f *Friends) RoomInvites(ctx context.Context, userID string) ([]map[string]any, error) {
+	return f.roomInvites(ctx, userID, time.Now())
+}
+
+// RoomInviteDismiss removes fromID's invite to userID (answered or declined).
+func (f *Friends) RoomInviteDismiss(ctx context.Context, userID, fromID string) error {
+	_, err := f.db.Exec(ctx, `DELETE FROM room_invite WHERE to_id = $1 AND from_id = $2`, userID, fromID)
+	return err
+}
+
 func (f *Friends) RoomInvite(ctx context.Context, userID, friendID, roomCode, mode string) (map[string]any, error) {
 	if len(roomCode) > 32 || len(mode) > 32 {
 		return refuse("invalid_request")
@@ -707,6 +732,16 @@ func (n *PgNK) ReferralClaim(ctx context.Context, userID, code, deviceID, source
 }
 func (n *PgNK) RoomInvite(ctx context.Context, userID, friendID, roomCode, mode string) (map[string]any, error) {
 	return n.friends.RoomInvite(ctx, userID, friendID, roomCode, mode)
+}
+
+func (n *PgNK) RoomInvites(ctx context.Context, userID string) ([]map[string]any, error) {
+	return n.friends.RoomInvites(ctx, userID)
+}
+func (n *PgNK) RoomInviteDismiss(ctx context.Context, userID, fromID string) error {
+	return n.friends.RoomInviteDismiss(ctx, userID, fromID)
+}
+func (n *PgNK) PlayerID(ctx context.Context, userID string) (string, error) {
+	return n.friends.codeFor(ctx, userID)
 }
 
 var _ game.Social = (*PgNK)(nil)

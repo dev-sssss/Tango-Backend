@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/dev-sssss/tango_backend/server/internal/game"
@@ -12,7 +13,11 @@ func (s *Service) getLeaderboard(c *Context, payload string) (string, error) {
 	ctx := c.context()
 	data := parse(payload)
 	id := str(data, "id", 32)
-	if id != tango.LeaderboardWeekly {
+	switch id {
+	case tango.LeaderboardWeekly, tango.LeaderboardWins:
+	case tango.LeaderboardFriends:
+		return s.friendsBoard(c)
+	default:
 		id = tango.LeaderboardTrophies
 	}
 	limit := int(num(data, "limit", 50))
@@ -50,6 +55,50 @@ func (s *Service) getLeaderboard(c *Context, payload string) (string, error) {
 		mine = map[string]any{"rank": own[0].Rank, "score": own[0].Score}
 	}
 	return ok(map[string]any{"id": id, "records": out, "me": mine, "cursor": next})
+}
+
+// friendsBoard ranks the caller and their friends by trophies.
+func (s *Service) friendsBoard(c *Context) (string, error) {
+	ctx := c.context()
+	me, err := s.ensureProfile(ctx, c.UserID, c.Username)
+	if err != nil {
+		return "", err
+	}
+	type row struct {
+		id, name, avatar, frame string
+		trophies                int64
+	}
+	rows := []row{{c.UserID, me.Name, me.Avatar, me.Frame, int64(me.Trophies)}}
+	if soc, ok := game.SocialFrom(s.NK); ok {
+		list, err := soc.FriendsList(ctx, c.UserID)
+		if err != nil {
+			return "", fail(err.Error())
+		}
+		if fs, isList := list["friends"].([]any); isList {
+			for _, f := range fs {
+				m, isMap := f.(map[string]any)
+				if !isMap {
+					continue
+				}
+				id, _ := m["user_id"].(string)
+				name, _ := m["display_name"].(string)
+				avatar, _ := m["avatar"].(string)
+				frame, _ := m["frame"].(string)
+				rows = append(rows, row{id, name, avatar, frame, num(m, "trophies", 0)})
+			}
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].trophies > rows[j].trophies })
+	out := make([]map[string]any, 0, len(rows))
+	var mine map[string]any
+	for i, r := range rows {
+		out = append(out, map[string]any{"rank": i + 1, "user_id": r.id, "name": r.name, "avatar": r.avatar, "frame": r.frame,
+			"score": r.trophies, "level": tango.LevelFor(int(r.trophies))})
+		if r.id == c.UserID {
+			mine = map[string]any{"rank": i + 1, "score": r.trophies}
+		}
+	}
+	return ok(map[string]any{"id": tango.LeaderboardFriends, "records": out, "me": mine, "cursor": ""})
 }
 
 func (s *Service) appConfig(c *Context, payload string) (string, error) {

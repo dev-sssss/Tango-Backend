@@ -58,6 +58,8 @@ namespace UnoGame.Online
         public int Coins;
         public int Diamonds;
         public string Name = "";
+        /// <summary>The permanent public player ID friends search for (made by the server with the account).</summary>
+        public string PlayerId = "";
         public int Trophies, Level = 1, Wins, Games;
         public bool TutorialDone;
         public int MatchRewardCoins;
@@ -74,6 +76,8 @@ namespace UnoGame.Online
         public string Avatar = "";
         public int Trophies;
         public long LastSeenUnixMs;
+        /// <summary>"online", "in_game" or "offline".</summary>
+        public string Status = "offline";
     }
     [Serializable]
     public sealed class SocialInvite
@@ -82,6 +86,42 @@ namespace UnoGame.Online
         public string Name = "";
         public string Room = "";
         public long SentUnixMs;
+        public string Mode = "";
+        public string Format = "";
+        public string Avatar = "";
+    }
+
+    /// <summary>One line of a ranking board.</summary>
+    [Serializable]
+    public sealed class RankRow
+    {
+        public int Rank;
+        public string UserId = "";
+        public string Name = "";
+        public string Avatar = "";
+        public string Frame = "";
+        public long Score;
+        public int Level = 1;
+    }
+
+    [Serializable]
+    public sealed class RankBoard
+    {
+        public string Id = "";
+        public List<RankRow> Rows = new List<RankRow>();
+        public int MyRank;
+        public long MyScore;
+    }
+
+    /// <summary>The lucky spin: its slices, spins left today, and (after a spin) the slice that won.</summary>
+    [Serializable]
+    public sealed class SpinState
+    {
+        public List<int> PrizeCoins = new List<int>();
+        public List<int> PrizeDiamonds = new List<int>();
+        public int FreeLeft, AdLeft;
+        public long AdWaitMs, NextResetUnixMs;
+        public int Slice = -1, WonCoins, WonDiamonds;
     }
     [Serializable]
     public sealed class SocialState

@@ -116,7 +116,11 @@ func (s *Service) Registry() map[string]*RPC {
 		{ID: "tango.friends.find", Fn: s.friendsFind, Access: AccessUser},
 		{ID: "tango.friends.action", Fn: s.friendsAction, Access: AccessUser},
 		{ID: "tango.friends.invite", Fn: s.friendsInvite, Access: AccessUser},
-		{ID: "tango.leaderboard.get", Fn: s.getLeaderboard, Access: AccessUser},
+		{ID: "tango.friends.invites", Fn: s.friendsInvites, Access: AccessUser, Summary: "Live room invites sent to the caller"},
+		{ID: "tango.friends.invite_reply", Fn: s.friendsInviteReply, Access: AccessUser, Summary: "Answer a room invite (it is removed either way)"},
+		{ID: "tango.leaderboard.get", Fn: s.getLeaderboard, Access: AccessUser, Summary: "id: trophies | weekly_trophies | wins | friends"},
+		{ID: "tango.spin.status", Fn: s.spinStatus, Access: AccessUser},
+		{ID: "tango.spin.play", Fn: s.spinPlay, Access: AccessUser, Summary: "Lucky spin: {} uses the free spin, {\"ad\":true} an ad spin"},
 		// misc
 		{ID: "tango.app.config", Fn: s.appConfig, Access: AccessAny},
 		{ID: "tango.announcements", Fn: s.getAnnouncements, Access: AccessAny},

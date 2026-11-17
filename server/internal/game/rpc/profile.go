@@ -33,6 +33,10 @@ func (s *Service) ensureProfile(ctx context.Context, userID, username string) (*
 			[]*game.WalletUpdate{{UserID: userID, Changeset: map[string]int64{"coins": cfg.StartingCoins, "diamonds": cfg.StartingDiamonds},
 				Metadata: map[string]any{"reason": "starting_wallet"}}}, true)
 		if err == nil {
+			// Every new player gets a permanent public player ID straight away.
+			if soc, ok := game.SocialFrom(s.NK); ok {
+				_, _ = soc.PlayerID(ctx, userID)
+			}
 			return p, nil
 		}
 		if !isVersionErr(err) {
@@ -52,8 +56,14 @@ func (s *Service) getProfile(c *Context, payload string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ok(map[string]any{"user_id": c.UserID, "username": c.Username, "profile": p.Map(), "level": tango.LevelFor(p.Trophies),
-		"trophies_to_next_level": tango.TrophiesPerLevel - p.Trophies%tango.TrophiesPerLevel, "wallet": w})
+	out := map[string]any{"user_id": c.UserID, "username": c.Username, "profile": p.Map(), "level": tango.LevelFor(p.Trophies),
+		"trophies_to_next_level": tango.TrophiesPerLevel - p.Trophies%tango.TrophiesPerLevel, "wallet": w}
+	if soc, ok := game.SocialFrom(s.NK); ok {
+		if id, err := soc.PlayerID(ctx, c.UserID); err == nil {
+			out["player_id"] = id
+		}
+	}
+	return ok(out)
 }
 
 func (s *Service) updateProfile(c *Context, payload string) (string, error) {

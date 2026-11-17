@@ -91,7 +91,7 @@ func (srv *Server) Start(ctx context.Context) error {
 	svc := rpc.NewService(srv.nk, ann)
 	srv.rpcs = svc.Registry()
 	// Leaderboards used by match settlement and the leaderboard RPC.
-	for _, lb := range []struct{ id, op, reset string }{{tango.LeaderboardTrophies, "set", ""}, {tango.LeaderboardWeekly, "incr", "0 0 * * 1"}} {
+	for _, lb := range []struct{ id, op, reset string }{{tango.LeaderboardTrophies, "set", ""}, {tango.LeaderboardWeekly, "incr", "0 0 * * 1"}, {tango.LeaderboardWins, "set", ""}} {
 		if err := srv.nk.LeaderboardCreate(ctx, lb.id, false, true, lb.op, lb.reset); err != nil {
 			return fmt.Errorf("leaderboard %s: %w", lb.id, err)
 		}

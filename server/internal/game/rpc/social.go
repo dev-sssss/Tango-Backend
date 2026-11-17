@@ -78,5 +78,36 @@ func (s *Service) friendsInvite(c *Context, payload string) (string, error) {
 	if !game.ValidUUID(friend) || room == "" || friend == c.UserID {
 		return refuse("INVALID_REQUEST")
 	}
-	return socialResult(soc.RoomInvite(c.context(), c.UserID, friend, room, str(data, "mode", 32)))
+	mode, format := str(data, "mode", 16), str(data, "format", 8)
+	if format != "" {
+		mode += "|" + format
+	}
+	return socialResult(soc.RoomInvite(c.context(), c.UserID, friend, room, mode))
+}
+
+func (s *Service) friendsInvites(c *Context, payload string) (string, error) {
+	soc, ok := s.social(c)
+	if !ok {
+		return refuse("UNAVAILABLE")
+	}
+	inv, err := soc.RoomInvites(c.context(), c.UserID)
+	if err != nil {
+		return "", fail(err.Error())
+	}
+	return enc(game.Normalize(map[string]any{"success": true, "invites": inv})), nil
+}
+
+func (s *Service) friendsInviteReply(c *Context, payload string) (string, error) {
+	soc, ok := s.social(c)
+	if !ok {
+		return refuse("UNAVAILABLE")
+	}
+	from := str(parse(payload), "user_id", 64)
+	if !game.ValidUUID(from) {
+		return refuse("INVALID_REQUEST")
+	}
+	if err := soc.RoomInviteDismiss(c.context(), c.UserID, from); err != nil {
+		return "", fail(err.Error())
+	}
+	return enc(map[string]any{"success": true}), nil
 }
