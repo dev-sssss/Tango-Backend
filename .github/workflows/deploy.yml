@@ -186,6 +186,7 @@ jobs:
         env:
           TANGO_DIR: ${{ steps.dir.outputs.path }}
         run: |
+          TANGO_HOST=$(printf '%s' "$TANGO_HOST" | tr -d '[:space:]')
           # Short-lived registry login kept in its own docker config dir, so
           # the server's normal docker login (other stacks) is not changed.
           echo "${{ secrets.GITHUB_TOKEN }}" | ssh ec2 "sudo bash -c 'umask 077; rm -rf /tmp/tango-docker-cfg; mkdir -p /tmp/tango-docker-cfg; DOCKER_CONFIG=/tmp/tango-docker-cfg docker login ghcr.io -u ${{ github.actor }} --password-stdin'" >/dev/null
@@ -198,6 +199,7 @@ jobs:
         env:
           TANGO_DIR: ${{ steps.dir.outputs.path }}
         run: |
+          TANGO_HOST=$(printf '%s' "$TANGO_HOST" | tr -d '[:space:]')
           key=$(ssh ec2 "sudo grep '^SERVER_KEY=' '${TANGO_DIR}/.env' | cut -d= -f2")
           base=$(ssh ec2 "sudo awk '/^  Base/{print \$3}' '${TANGO_DIR}/connection.txt'")
           scheme=${base%%://*}
