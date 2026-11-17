@@ -40,8 +40,11 @@ Cards game.
    `tango-nonprod-infrastructure`, which only this repository's `nonprod`
    GitHub environment can use, limited to SSM sessions on
    `i-060485c20a979c038` and the transfer bucket.
-2. EC2 security group: allow inbound **8350** (the Tango port; 80, 443 and
-   7350 already belong to the Ludo stack and mail). SSH (22) is not needed.
+2. EC2 security group: allow inbound **8350** (HTTP) and **9443** (HTTPS);
+   80, 443, 7350 and 8443 already belong to the Ludo stack and mail. SSH (22)
+   is not needed.
+3. DNS (Namecheap, Advanced DNS): **A record** `tango-backend` →
+   `52.66.106.80`. The domain is `public_host` in `config/aws-targets.json`.
 
 ### Every deploy
 
@@ -58,10 +61,17 @@ What happens on the server (`/opt/tango-server`):
 3. Postgres starts, the database is migrated, `tango-node1` then
    `tango-node2` are replaced one at a time (live matches move to the other
    node), then nginx
-4. Ports: 80/443 with HTTPS if free, otherwise **8350** (HTTP); on the
-   nonprod EC2 that is 8350
-5. Timers for certificate renewal and a nightly database backup (`backups/`)
-6. Connection details in `connection.txt` (including the server key for the
+4. Ports: 80/443 if free, otherwise **8350** (HTTP) and the first free of
+   8443/9443/… (HTTPS); on the nonprod EC2 that is 8350 and 9443
+5. HTTPS: a free Let's Encrypt certificate for `tango-backend.sssss.co.in`.
+   On nonprod the host's certbot issues it through `/opt/ludo-acme`, the
+   folder the shared Ludo nginx already serves on port 80 for Let's Encrypt,
+   so that nginx is not changed. `certbot.timer` renews it; the
+   certificate's deploy hook (`bin/sync-cert.sh`) copies it to `certs/` and
+   reloads Tango's nginx. Until the A record points at the server the deploy
+   stays on HTTP (by IP) and says why; the next run tries again.
+6. Timers for certificate renewal and a nightly database backup (`backups/`)
+7. Connection details in `connection.txt` (including the server key for the
    Unity client): `sudo cat /opt/tango-server/connection.txt`
 
 It is its own Compose project (`tango-backend`) with its own network, volume
@@ -75,7 +85,7 @@ sudo docker compose logs -f tango-node1 # server logs
 ```
 
 ```
-Unity app ──HTTP(S)/WS──▶ nginx :8350 (rate limits, WebSocket)
+Unity app ──HTTPS/WSS :9443 (HTTP :8350)──▶ nginx (rate limits, WebSocket)
                             │ least_conn
                  ┌──────────┴──────────┐
             tango-node1           tango-node2     (Go binary on distroless)

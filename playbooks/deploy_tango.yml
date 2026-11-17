@@ -10,7 +10,10 @@
 #   3. runs deploy-files/scripts/deploy.sh, which writes .env and configs,
 #      starts Postgres, migrates, rolls tango-node1 then tango-node2 (their
 #      matches move live to the other node), and starts nginx
-#   4. brings the connection details back to the runner for the smoke test
+#   4. HTTPS: when TANGO_PUBLIC_HOST is a domain whose A record points here,
+#      gets a free Let's Encrypt certificate (on nonprod through the host's
+#      certbot and the shared webroot tango_acme_webroot) and serves HTTPS
+#   5. brings the connection details back to the runner for the smoke test
 #
 # The Tango stack is its own Compose project with its own network, volume
 # and ports, so the Ludo stack, mail and everything else on the host are not
@@ -26,6 +29,8 @@
     release: "{{ lookup('env', 'TANGO_RELEASE') }}"
     artifact_dir: "{{ lookup('env', 'TANGO_ARTIFACT_DIR') }}"
     public_host: "{{ lookup('env', 'TANGO_PUBLIC_HOST') }}"
+    # The server's public IP (address used while there is no certificate yet)
+    public_ip: "{{ lookup('env', 'TANGO_PUBLIC_IP') }}"
     result_file: "{{ lookup('env', 'TANGO_RESULT_FILE') | default('/tmp/tango-deploy-result.json', true) }}"
     # auto = Let's Encrypt certificate when ports 80/443 are free for Tango
     tls_mode: "{{ lookup('env', 'TANGO_TLS') | default('auto', true) }}"
@@ -88,6 +93,8 @@
         TANGO_DIR: "{{ tango_dir }}"
         TANGO_ENV: "{{ environment_name }}"
         TANGO_TLS: "{{ tls_mode }}"
+        TANGO_PUBLIC_IP: "{{ public_ip }}"
+        TANGO_ACME_WEBROOT: "{{ tango_acme_webroot | default('') }}"
         ALLOW_CHEATS: "{{ 'true' if (tango_allow_cheats | bool) and environment_name != 'production' else 'false' }}"
         PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
       register: deploy
@@ -95,7 +102,8 @@
 
     - name: Deploy output
       ansible.builtin.debug:
-        msg: "{{ deploy.stdout_lines | select('match', '^(==>|  [A-Z]|Ports|An existing|WARNING)') | reject('match', '.*Server key.*') | list }}"
+        msg: "{{ (deploy.stdout_lines | select('match', '^(==>|  [A-Z]|Ports|An existing|WARNING)') | reject('match', '.*Server key.*') | list)
+                 + (deploy.stderr_lines | select('match', '^WARNING') | list) }}"
 
     - name: Read the connection details
       ansible.builtin.slurp:

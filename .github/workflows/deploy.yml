@@ -112,7 +112,7 @@ jobs:
         id: target
         run: |
           t=$(jq -c '.["${{ inputs.environment }}"]' config/aws-targets.json)
-          for k in account_id region deploy_role_arn; do echo "$k=$(echo "$t" | jq -r .$k)" >> "$GITHUB_OUTPUT"; done
+          for k in account_id region deploy_role_arn public_host; do echo "$k=$(echo "$t" | jq -r .$k)" >> "$GITHUB_OUTPUT"; done
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.target.outputs.deploy_role_arn }}
@@ -140,7 +140,8 @@ jobs:
           SSM_TRANSFER_BUCKET: ${{ steps.check.outputs.transfer_bucket }}
           TANGO_RELEASE: ${{ needs.build.outputs.release }}
           TANGO_ARTIFACT_DIR: ${{ github.workspace }}/artifact
-          TANGO_PUBLIC_HOST: ${{ vars.TANGO_DOMAIN || steps.check.outputs.public_ip }}
+          TANGO_PUBLIC_HOST: ${{ vars.TANGO_DOMAIN || steps.target.outputs.public_host || steps.check.outputs.public_ip }}
+          TANGO_PUBLIC_IP: ${{ steps.check.outputs.public_ip }}
           TANGO_RESULT_FILE: ${{ runner.temp }}/tango-deploy-result.json
         run: ansible-playbook -i "inventories/${{ inputs.environment }}/hosts.yml" playbooks/deploy_tango.yml
       - name: Smoke test from the internet
@@ -149,9 +150,15 @@ jobs:
         run: |
           base=$(jq -r .base "$RESULT"); key=$(jq -r .server_key "$RESULT")
           echo "::add-mask::$key"
-          bash deploy/scripts/smoke-test.sh "$base" "$key"
           hostport=${base#*://}; port=${hostport##*:}
           [ "$port" = "$hostport" ] && port=$([ "${base%%://*}" = https ] && echo 443 || echo 80)
+          if ! curl -sS -o /dev/null --max-time 10 "$base/healthcheck"; then
+            if timeout 8 bash -c "exec 3<>/dev/tcp/${hostport%%:*}/$port" 2>/dev/null; then :; else
+              echo "::error::Port $port is not reachable from the internet. Add an inbound rule for TCP $port (source 0.0.0.0/0) to the instance's security group, then run the workflow again."
+              exit 1
+            fi
+          fi
+          bash deploy/scripts/smoke-test.sh "$base" "$key"
           {
             echo "## Tango backend deployed (${{ inputs.environment }})"
             echo

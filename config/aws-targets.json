@@ -5,6 +5,7 @@
     "instance_id": "i-060485c20a979c038",
     "transfer_bucket": "ludo-nonprod-ssm-521503820723-ap-south-1",
     "deploy_role_arn": "arn:aws:iam::521503820723:role/tango-nonprod-infrastructure",
-    "tango_dir": "/opt/tango-server"
+    "tango_dir": "/opt/tango-server",
+    "public_host": "tango-backend.sssss.co.in"
   }
 }

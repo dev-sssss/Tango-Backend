@@ -60,7 +60,7 @@ jobs:
       - name: Script checks
         run: |
           bash -n deploy/scripts/*.sh iam/*.sh
-          shellcheck -S warning deploy/scripts/*.sh iam/*.sh
+          shellcheck -S warning deploy/scripts/*.sh iam/*.sh ci/*.sh
           python3 -m py_compile scripts/check_aws_target.py
       - name: Ansible
         run: |
@@ -70,7 +70,11 @@ jobs:
       - name: Existing stack on the server
         if: matrix.scenario == 'shared-server'
         run: |
-          docker run -d --name existing-proxy -p 80:80 -p 443:80 -p 7350:80 nginx:alpine
+          # Like the shared Ludo nginx: owns 80/443/7350 and serves the
+          # Let's Encrypt webroot /opt/ludo-acme for every host name.
+          sudo mkdir -p /opt/ludo-acme
+          docker run -d --name existing-proxy -p 80:80 -p 443:80 -p 7350:80 \
+            -v /opt/ludo-acme:/usr/share/nginx/html:ro nginx:alpine
           docker pull -q busybox:latest
           sudo mkdir -p /root/.docker
           echo '{"auths":{"ghcr.io":{"auth":"ZXhpc3Rpbmc6bG9naW4="}}}' | sudo tee /root/.docker/config.json >/dev/null
@@ -109,6 +113,42 @@ jobs:
           docker image inspect busybox:latest >/dev/null
           sudo sha256sum -c /tmp/docker-config.sha
           sudo ls "$TANGO_DIR"/docker-compose.yml.bak-*
+      - name: HTTPS through the host certbot - DNS record missing (stays on HTTP)
+        if: matrix.scenario == 'shared-server'
+        run: |
+          sudo install -m 0755 ci/fake-certbot.sh /usr/local/bin/certbot
+          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=tango-nodns.example.test TANGO_PUBLIC_IP=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+            ansible-playbook -i ci/local-inventory.ini -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
+            -e tango_acme_webroot=/opt/ludo-acme playbooks/deploy_tango.yml
+          [ "$(jq -r .base /tmp/result.json)" = "http://127.0.0.1:8350" ]
+          bash deploy/scripts/smoke-test.sh "$(jq -r .base /tmp/result.json)" "$(jq -r .server_key /tmp/result.json)"
+      - name: HTTPS through the host certbot - DNS record in place
+        if: matrix.scenario == 'shared-server'
+        run: |
+          echo "127.0.0.1 tango-ci.example.test" | sudo tee -a /etc/hosts
+          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=tango-ci.example.test TANGO_PUBLIC_IP=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+            ansible-playbook -i ci/local-inventory.ini -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
+            -e tango_acme_webroot=/opt/ludo-acme playbooks/deploy_tango.yml
+          base=$(jq -r .base /tmp/result.json); echo "base=$base"
+          [ "$base" = "https://tango-ci.example.test:8443" ]
+          SMOKE_INSECURE=1 bash deploy/scripts/smoke-test.sh "$base" "$(jq -r .server_key /tmp/result.json)"
+          # existing clients on plain HTTP keep working
+          curl -fsS http://127.0.0.1:8350/healthcheck >/dev/null
+          # the shared webroot is left clean
+          [ -z "$(sudo find /opt/ludo-acme -type f)" ]
+          # renewal: certbot runs the deploy hook, Tango's nginx serves the new certificate
+          serial() { echo | openssl s_client -connect 127.0.0.1:8443 -servername tango-ci.example.test 2>/dev/null | openssl x509 -noout -serial; }
+          before=$(serial)
+          sudo FORCE_RENEWAL=1 certbot certonly --webroot -w /opt/ludo-acme -d tango-ci.example.test \
+            --cert-name tango-ci.example.test --deploy-hook "$TANGO_DIR/bin/sync-cert.sh"
+          sleep 2; after=$(serial)
+          echo "$before -> $after"; [ "$before" != "$after" ]
+          # a later deploy keeps HTTPS without issuing again
+          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=tango-ci.example.test TANGO_PUBLIC_IP=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+            ansible-playbook -i ci/local-inventory.ini -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
+            -e tango_acme_webroot=/opt/ludo-acme playbooks/deploy_tango.yml
+          [ "$(jq -r .base /tmp/result.json)" = "https://tango-ci.example.test:8443" ]
+          [ "$(serial)" = "$after" ]
       - name: Backup script
         run: sudo TANGO_DIR="$TANGO_DIR" "$TANGO_DIR/bin/backup.sh" && sudo ls -l "$TANGO_DIR/backups"
       - name: Logs on failure

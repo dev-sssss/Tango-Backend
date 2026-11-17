@@ -19,10 +19,24 @@
 #   TANGO_HOST       public IP or domain clients use (required)
 #   TANGO_DIR        deploy folder on this server (default /opt/tango-server)
 #   TANGO_ENV        nonprod | production (default nonprod)
-#   TANGO_TLS        auto | off (auto = Let's Encrypt certificate when ports 80/443 are ours)
+#   TANGO_TLS        auto | off (auto = free Let's Encrypt certificate, see below)
+#   TANGO_PUBLIC_IP  the server's public IP; used in the address while there is no certificate
+#   TANGO_ACME_WEBROOT  folder that whatever owns port 80 already serves at
+#                    /.well-known/acme-challenge/ (on nonprod: /opt/ludo-acme)
 #   TANGO_HTTP_PORT  force the public HTTP port (first deploy only)
 #   TANGO_KEEP       releases to keep (default 5)
 #   ALLOW_CHEATS     true | false (dev shortcut RPC; always off in production)
+#
+# HTTPS (TANGO_TLS=auto, TANGO_HOST is a domain or IP):
+#   - ports 80/443 free: Tango's own nginx + certbot container (HTTP-01 on 80).
+#   - ports 80/443 owned by another stack (nonprod): the host's certbot issues
+#     the certificate through TANGO_ACME_WEBROOT, the folder the other stack's
+#     nginx already serves for Let's Encrypt, so its configuration is not
+#     touched. Tango serves HTTPS on its own port (HTTPS_PORT in .env) and the
+#     host's certbot.timer renews it; a per-certificate deploy hook copies the
+#     new files into $TANGO_DIR/certs and reloads Tango's nginx.
+#   No certificate yet (DNS not pointing here, check failed): plain HTTP, the
+#   deploy still succeeds and the next run tries again.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 
@@ -57,6 +71,7 @@ fi
 
 log "Files in $DIR"
 mkdir -p "$DIR"/{config,nginx,certbot/www,certbot/conf,backups,bin}
+install -d -m 0700 "$DIR/certs"
 if [ -f "$DIR/docker-compose.yml" ] && ! grep -q '^name: tango-backend' "$DIR/docker-compose.yml"; then
   bak="$DIR/docker-compose.yml.bak-$(date +%Y%m%d%H%M%S)"
   echo "An existing docker-compose.yml in $DIR is not the Tango one; saved it as $bak"
@@ -64,6 +79,38 @@ if [ -f "$DIR/docker-compose.yml" ] && ! grep -q '^name: tango-backend' "$DIR/do
 fi
 install -m 0644 "$SRC/docker-compose.yml" "$DIR/docker-compose.yml"
 install -m 0755 "$SRC/scripts/backup.sh" "$DIR/bin/backup.sh"
+
+# Copies a certificate lineage (fullchain.pem + privkey.pem) into certs/ for
+# Tango's nginx and reloads it. Used as certbot's deploy hook (RENEWED_LINEAGE)
+# and after the first issue.
+cat > "$DIR/bin/sync-cert.sh" <<EOF
+#!/bin/sh
+# Written by deploy.sh.
+set -eu
+src=\${RENEWED_LINEAGE:-\${1:?certificate folder}}
+dst=$DIR/certs
+umask 077
+cp -L "\$src/fullchain.pem" "\$dst/fullchain.pem.new"
+cp -L "\$src/privkey.pem" "\$dst/privkey.pem.new"
+mv "\$dst/fullchain.pem.new" "\$dst/fullchain.pem"
+mv "\$dst/privkey.pem.new" "\$dst/privkey.pem"
+basename "\$src" > "\$dst/name"
+if [ -n "\$(docker compose --project-directory $DIR ps -q nginx 2>/dev/null)" ]; then
+  docker compose --project-directory $DIR exec -T nginx nginx -s reload || true
+fi
+EOF
+chmod 0755 "$DIR/bin/sync-cert.sh"
+
+# Renewal for the certbot-container mode (no-op otherwise).
+cat > "$DIR/bin/renew-cert.sh" <<EOF
+#!/bin/sh
+# Written by deploy.sh.
+set -eu
+[ -d $DIR/certbot/conf/live/tango ] || exit 0
+docker compose --project-directory $DIR run --rm certbot renew --webroot -w /var/www/certbot --quiet
+$DIR/bin/sync-cert.sh $DIR/certbot/conf/live/tango
+EOF
+chmod 0755 "$DIR/bin/renew-cert.sh"
 
 # ------------------------------------------------------------ secrets (.env)
 # Generated on the first deploy and kept on this server only.
@@ -164,6 +211,40 @@ install -m 0640 -o root -g 65532 "$tmp" "$node_cfg"   # readable by the containe
 rm -f "$tmp"
 
 # ------------------------------------------------------------ nginx config
+nginx_locations() {
+  cat <<'EOF'
+    location ~ ^/(ws|api/v2/socket)$ {
+      proxy_pass http://tango;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_read_timeout 120s;
+      proxy_send_timeout 120s;
+      proxy_next_upstream error timeout http_502 http_503;
+      limit_conn perip 50;
+    }
+    location ~ ^/(v2/account/authenticate|api/v2/auth) {
+      limit_req zone=auth burst=30 nodelay;
+      proxy_pass http://tango;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_next_upstream error timeout http_502 http_503;
+    }
+    location / {
+      proxy_pass http://tango;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_next_upstream error timeout http_502 http_503;
+      proxy_read_timeout 30s;
+    }
+EOF
+}
 write_nginx() { # $1 = tls (1/0)
   local tls=$1 out="$DIR/nginx/nginx.conf.new"
   {
@@ -195,67 +276,56 @@ http {
     server_name _;
     location /.well-known/acme-challenge/ { root /var/www/certbot; }
 EOF
+    if [ "$tls" = 1 ] && [ "$HTTP_PORT" = 80 ]; then
+      echo '    location / { return 301 https://$host$request_uri; }'
+    else
+      # Plain HTTP keeps working on a non-standard port (existing clients).
+      nginx_locations
+    fi
+    echo '  }'
     if [ "$tls" = 1 ]; then
       cat <<'EOF'
-    location / { return 301 https://$host$request_uri; }
-  }
   server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
     server_name _;
-    ssl_certificate     /etc/letsencrypt/live/tango/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tango/privkey.pem;
+    ssl_certificate     /etc/tango-certs/fullchain.pem;
+    ssl_certificate_key /etc/tango-certs/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
 EOF
+      nginx_locations
+      echo '  }'
     fi
-    cat <<'EOF'
-    location ~ ^/(ws|api/v2/socket)$ {
-      proxy_pass http://tango;
-      proxy_http_version 1.1;
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection $connection_upgrade;
-      proxy_set_header Host $host;
-      proxy_set_header X-Forwarded-For $remote_addr;
-      proxy_read_timeout 120s;
-      proxy_send_timeout 120s;
-      proxy_next_upstream error timeout http_502 http_503;
-      limit_conn perip 50;
-    }
-    location ~ ^/(v2/account/authenticate|api/v2/auth) {
-      limit_req zone=auth burst=30 nodelay;
-      proxy_pass http://tango;
-      proxy_http_version 1.1;
-      proxy_set_header Connection "";
-      proxy_set_header Host $host;
-      proxy_set_header X-Forwarded-For $remote_addr;
-      proxy_next_upstream error timeout http_502 http_503;
-    }
-    location / {
-      proxy_pass http://tango;
-      proxy_http_version 1.1;
-      proxy_set_header Connection "";
-      proxy_set_header Host $host;
-      proxy_set_header X-Forwarded-For $remote_addr;
-      proxy_next_upstream error timeout http_502 http_503;
-      proxy_read_timeout 30s;
-    }
-  }
-}
-EOF
+    echo '}'
   } > "$out"
   if cmp -s "$out" "$DIR/nginx/nginx.conf" 2>/dev/null; then rm -f "$out"; return 1; fi
   mv "$out" "$DIR/nginx/nginx.conf"
   return 0
 }
 
-if [ "$HTTP_PORT" != 80 ] && [ "$TLS" = auto ]; then
-  TLS=off   # Let's Encrypt must reach port 80; another program owns it
+# Certificate mode: "container" when port 80 is Tango's, "host" when another
+# stack owns 80 but serves TANGO_ACME_WEBROOT and this host has certbot.
+cert_mode=none
+if [ "$TLS" = auto ]; then
+  if [ "$HTTP_PORT" = 80 ]; then
+    cert_mode=container
+  elif ! is_ip "$TANGO_HOST" && [ -n "${TANGO_ACME_WEBROOT:-}" ] && [ -d "$TANGO_ACME_WEBROOT" ] &&
+       command -v certbot >/dev/null 2>&1; then
+    cert_mode=host
+  fi
 fi
-cert="$DIR/certbot/conf/live/tango/fullchain.pem"
-have_cert=0; [ -f "$cert" ] && have_cert=1
-[ "$TLS" = off ] && have_cert=0
+# Older deploys kept the container certificate only under certbot/conf.
+if [ ! -f "$DIR/certs/fullchain.pem" ] && [ -f "$DIR/certbot/conf/live/tango/fullchain.pem" ]; then
+  "$DIR/bin/sync-cert.sh" "$DIR/certbot/conf/live/tango"
+fi
+cert_name=tango; [ "$cert_mode" = host ] && cert_name=$TANGO_HOST
+cert="$DIR/certs/fullchain.pem"
+have_cert=0
+if [ "$cert_mode" != none ] && [ -f "$cert" ] && [ "$(cat "$DIR/certs/name" 2>/dev/null)" = "$cert_name" ]; then
+  have_cert=1
+fi
 nginx_changed=0
 if write_nginx "$have_cert"; then nginx_changed=1; fi
 
@@ -285,7 +355,7 @@ for i in 1 2 3; do
   [ $i = 3 ] && exit 1
   sleep 10
 done
-if [ "$TLS" = auto ]; then
+if [ "$cert_mode" = container ]; then
   compose --profile tools pull --quiet certbot
 fi
 
@@ -322,7 +392,7 @@ if [ -n "$nginx_running" ] && [ "$nginx_changed" = 1 ]; then
   compose exec -T nginx nginx -s reload
 fi
 
-if [ "$TLS" = auto ] && [ ! -f "$cert" ]; then
+if [ "$cert_mode" = container ] && [ "$have_cert" = 0 ]; then
   log "TLS certificate for $TANGO_HOST (Let's Encrypt)"
   if is_ip "$TANGO_HOST"; then
     ident="--ip-address $TANGO_HOST --preferred-profile shortlived"
@@ -336,12 +406,51 @@ if [ "$TLS" = auto ] && [ ! -f "$cert" ]; then
       grep -q '^renew_before_expiry' "$DIR/certbot/conf/renewal/tango.conf" ||
         sed -i '/^version/a renew_before_expiry = 2 days' "$DIR/certbot/conf/renewal/tango.conf"
     fi
+    "$DIR/bin/sync-cert.sh" "$DIR/certbot/conf/live/tango"
     write_nginx 1 || true
     compose exec -T nginx nginx -s reload
     have_cert=1
   else
     echo "WARNING: certificate not issued; serving plain HTTP for now. Check that ports 80 and 443 are open in the EC2 security group." >&2
   fi
+fi
+
+if [ "$cert_mode" = host ]; then
+  log "TLS certificate for $TANGO_HOST (host certbot, webroot $TANGO_ACME_WEBROOT)"
+  host_cert_ok=0
+  dns_ip=$(getent ahostsv4 "$TANGO_HOST" 2>/dev/null | awk 'NR==1{print $1}' || true)
+  probe="tango-probe-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  challenge_dir="$TANGO_ACME_WEBROOT/.well-known/acme-challenge"
+  if [ -z "$dns_ip" ]; then
+    echo "WARNING: $TANGO_HOST has no DNS A record yet; serving plain HTTP for now. Add the A record (value: ${TANGO_PUBLIC_IP:-the Elastic IP of this server}) and deploy again." >&2
+  elif [ -n "${TANGO_PUBLIC_IP:-}" ] && [ "$dns_ip" != "$TANGO_PUBLIC_IP" ]; then
+    echo "WARNING: $TANGO_HOST points to $dns_ip, not this server ($TANGO_PUBLIC_IP); serving plain HTTP for now." >&2
+  else
+    mkdir -p "$challenge_dir"
+    echo "$probe" > "$challenge_dir/$probe"; chmod 0644 "$challenge_dir/$probe"
+    got=$(curl -fsS --max-time 10 --resolve "$TANGO_HOST:80:127.0.0.1" \
+            "http://$TANGO_HOST/.well-known/acme-challenge/$probe" 2>/dev/null || true)
+    rm -f "$challenge_dir/$probe"
+    if [ "$got" != "$probe" ]; then
+      echo "WARNING: the web server on port 80 does not serve $TANGO_ACME_WEBROOT for $TANGO_HOST; serving plain HTTP for now." >&2
+    elif certbot certonly --webroot -w "$TANGO_ACME_WEBROOT" -d "$TANGO_HOST" --cert-name "$TANGO_HOST" \
+           --deploy-hook "$DIR/bin/sync-cert.sh" --keep-until-expiring \
+           --non-interactive --agree-tos --register-unsafely-without-email; then
+      live=$(certbot certificates --cert-name "$TANGO_HOST" 2>/dev/null | awk '/Certificate Path:/{print $3; exit}')
+      live=${live:+$(dirname "$live")}
+      [ -n "$live" ] || live=/etc/letsencrypt/live/$TANGO_HOST
+      "$DIR/bin/sync-cert.sh" "$live"
+      host_cert_ok=1
+    else
+      echo "WARNING: Let's Encrypt did not issue the certificate; serving plain HTTP for now." >&2
+    fi
+  fi
+  if [ "$host_cert_ok" = 1 ]; then
+    have_cert=1
+  fi
+  # Serve what we have (HTTPS when the certificate is there).
+  [ -f "$cert" ] && [ "$(cat "$DIR/certs/name" 2>/dev/null)" = "$cert_name" ] || have_cert=0
+  if write_nginx "$have_cert"; then compose exec -T nginx nginx -s reload; fi
 fi
 
 # ------------------------------------------------------------ timers
@@ -352,8 +461,7 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
 Description=Renew the Tango TLS certificate
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/env docker compose --project-directory $DIR run --rm certbot renew --webroot -w /var/www/certbot --quiet
-ExecStartPost=/usr/bin/env docker compose --project-directory $DIR exec -T nginx nginx -s reload
+ExecStart=$DIR/bin/renew-cert.sh
 EOF
   cat > /etc/systemd/system/tango-certbot-renew.timer <<'EOF'
 [Unit]
@@ -389,11 +497,11 @@ fi
 # ------------------------------------------------------------ check
 log "Health check"
 if [ "$have_cert" = 1 ]; then
-  scheme=https; port=$HTTPS_PORT
+  scheme=https; port=$HTTPS_PORT; public=$TANGO_HOST
 else
-  scheme=http; port=$HTTP_PORT
+  scheme=http; port=$HTTP_PORT; public=${TANGO_PUBLIC_IP:-$TANGO_HOST}
 fi
-base="$scheme://$TANGO_HOST"
+base="$scheme://$public"
 { [ "$scheme" = https ] && [ "$port" = 443 ]; } || { [ "$scheme" = http ] && [ "$port" = 80 ]; } || base="$base:$port"
 ok=0
 for _ in $(seq 1 30); do
@@ -413,7 +521,7 @@ cat > "$DIR/connection.txt" <<EOF
 Tango Cards server ($ENVNAME)
   Base       : $base
   Scheme     : $scheme
-  Host       : $TANGO_HOST
+  Host       : $public
   Port       : $port
   Server key : $SERVER_KEY
   Health     : $base/healthcheck

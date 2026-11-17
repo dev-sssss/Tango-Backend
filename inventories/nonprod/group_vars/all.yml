@@ -7,5 +7,10 @@ ansible_aws_ssm_bucket_sse_mode: AES256
 ansible_become: true
 environment_name: nonprod
 tango_dir: /opt/tango-server
+# Port 80 belongs to the shared Ludo nginx, which serves this folder at
+# /.well-known/acme-challenge/ for every domain (host certbot, webroot mode).
+# Tango's certificate is issued and renewed through it; the nginx config is
+# not changed.
+tango_acme_webroot: /opt/ludo-acme
 # Dev shortcut RPC (+10,000 coins); never enabled in production.
 tango_allow_cheats: true
