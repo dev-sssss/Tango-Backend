@@ -29,30 +29,39 @@ Actions):
 | `EC2_USER` | SSH user: `ubuntu` (Ubuntu) or `ec2-user` (Amazon Linux) |
 | `EC2_SSH_KEY` | the full contents of the instance's `.pem` private key |
 
-The EC2 security group must allow inbound **22** (SSH from GitHub Actions),
-**80** and **443**. Ports 80/443 must not be used by anything else on the
-instance.
+Optional repository variables: `EC2_DEPLOY_PATH` (your Tango folder on the
+server; if not set, the workflow uses the one folder named like `*tango*` in
+the SSH user's home, `/opt` or `/srv`) and `TANGO_DOMAIN`.
+
+Security group: inbound **22** (SSH from GitHub Actions) and either **80 +
+443** (when nothing else on the server uses them: HTTPS) or **7350** (used
+automatically when 80/443 already belong to another stack: plain HTTP).
 
 **Every deploy:** Actions → **Deploy to EC2** → **Run workflow**. It tests the
 server, builds the image (amd64 + arm64) into GitHub Container Registry,
-copies `deploy/` to the instance over SSH and runs `deploy.sh`, then checks
-the server from outside. The run summary shows the host, port and server key
-for the Unity client.
+connects over SSH, and runs `deploy.sh` in your Tango folder, then checks the
+server from outside. The run summary shows the host, port and server key for
+the Unity client.
 
-What `deploy.sh` does on the instance (`/opt/tango`):
+What `deploy.sh` does in the Tango folder:
 
-1. installs Docker and the Compose plugin if missing (Ubuntu or Amazon Linux)
-2. generates all secrets once into `/opt/tango/.env` (database password,
-   session keys, HTTP key, cluster secret, client server key); they never
-   leave the server
+1. installs Docker and the Compose plugin only if missing
+2. writes `docker-compose.yml` and `.env` (new image tag, ports, and secrets
+   generated once: database password, session keys, HTTP key, cluster
+   secret, client server key; they never leave the server)
 3. starts Postgres, runs the database migration, then starts or replaces
    `tango-node1` and `tango-node2` one at a time (live matches move to the
    other node), then nginx
-4. gets a Let's Encrypt certificate for the Elastic IP (6-day certificate,
-   renewed automatically) or for `TANGO_DOMAIN` if that variable is set
+4. with ports 80/443: gets a Let's Encrypt certificate for the Elastic IP
+   (6-day certificate, renewed automatically) or for `TANGO_DOMAIN`
 5. installs timers for certificate renewal and a nightly database backup
-   (`/opt/tango/backups`, newest 7 kept)
-6. writes the connection details to `/opt/tango/connection.txt`
+   (`backups/`, newest 7 kept)
+6. writes the connection details to `connection.txt`
+
+It lives next to other Compose stacks without touching them: its own project
+name (`tango-backend`), network and volume; only free ports; only old Tango
+images are removed; the registry login for the deploy is kept in a temporary
+docker config, so the server's own `docker login` is unchanged.
 
 Manual deploy on the instance (no GitHub): copy `deploy/` there and run
 `sudo TANGO_IMAGE=<image> TANGO_HOST=<elastic-ip> deploy/scripts/deploy.sh`.
@@ -60,7 +69,7 @@ Manual deploy on the instance (no GitHub): copy `deploy/` there and run
 Useful on the instance:
 
 ```
-cd /opt/tango
+cd <your tango folder>
 sudo docker compose ps                  # what is running
 sudo docker compose logs -f tango-node1 # server logs
 sudo cat connection.txt                 # host, port, server key
@@ -73,7 +82,7 @@ Unity app ──HTTPS/WSS──▶ nginx :443 (TLS, rate limits, WebSocket)
            tango-node1           tango-node2     (Go; API + sockets + matches)
                 └── cluster bus ──────┘
                            │
-                    PostgreSQL 16  ──nightly──▶ /opt/tango/backups
+                    PostgreSQL 16  ──nightly──▶ backups/
 ```
 
 ## Game rules implemented on the server
@@ -106,5 +115,5 @@ TANGO_TEST_DB=postgres://user:pass@localhost:5432/tango_e2e go test ./...   # + 
 
 Admin RPCs (`tango.admin.grant`, `tango.admin.set_app_config`,
 `tango.admin.set_shop_catalog`, `tango.admin.force_finish_match`,
-`tango.admin.delete_account`) need `HTTP_KEY` from `/opt/tango/.env` on the
-instance: `POST /v2/rpc/<id>?unwrap=true&http_key=<key>`.
+`tango.admin.delete_account`) need `HTTP_KEY` from `.env` in the Tango
+folder: `POST /v2/rpc/<id>?unwrap=true&http_key=<key>`.
