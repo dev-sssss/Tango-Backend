@@ -29,7 +29,14 @@ const (
 	KindWild4   = "wild4"
 	KindWild6   = "wild6"
 	KindWild10  = "wild10"
+	// No Mercy's coloured cards.
+	KindDraw4      = "draw4"       // coloured +4
+	KindSkipAll    = "skip_all"    // skips everyone else: the same player goes again
+	KindDiscardAll = "discard_all" // also discards every other card of its colour from the hand
 )
+
+// MercyLimit: in No Mercy a player who reaches this many cards is out.
+const MercyLimit = 25
 
 // Game modes.
 const (
@@ -70,14 +77,14 @@ func (c Card) IsWildPlus() bool {
 }
 
 // IsPlus reports any card that adds to a draw stack.
-func (c Card) IsPlus() bool { return c.Kind == KindDraw2 || c.IsWildPlus() }
+func (c Card) IsPlus() bool { return c.Kind == KindDraw2 || c.Kind == KindDraw4 || c.IsWildPlus() }
 
 // DrawAmount is how many cards a plus card adds to the stack.
 func (c Card) DrawAmount() int {
 	switch c.Kind {
 	case KindDraw2:
 		return 2
-	case KindWild4:
+	case KindWild4, KindDraw4:
 		return 4
 	case KindWild6:
 		return 6
@@ -111,6 +118,7 @@ func handPoints(h []Card) int {
 // deckSpec lists how many copies of each card a mode's deck holds.
 type deckSpec struct {
 	zeros, perNumber, skips, reverses, draw2s int // per colour
+	draw4s, skipAlls, discardAlls             int // per colour (No Mercy)
 	wild, wild4, wild6, wild10                int // black cards
 }
 
@@ -118,8 +126,11 @@ var deckSpecs = map[string]deckSpec{
 	// 108 cards: per colour one 0, two of 1-9, two Skip, two Reverse, two +2;
 	// four Wild and four Wild +4.
 	ModeClassic: {zeros: 1, perNumber: 2, skips: 2, reverses: 2, draw2s: 2, wild: 4, wild4: 4},
-	// No Mercy: same coloured cards, plus Wild +4, Wild +6 and Wild +10.
-	ModeNoMercy: {zeros: 1, perNumber: 2, skips: 2, reverses: 2, draw2s: 2, wild: 4, wild4: 4, wild6: 4, wild10: 2},
+	// No Mercy, 160 cards: per colour two of 0-9, three Skip, three Reverse,
+	// three +2, three Discard All, two coloured +4 and two Skip Everyone;
+	// eight Wild +4, four Wild +6 and four Wild +10 (the game's own deck).
+	ModeNoMercy: {zeros: 2, perNumber: 2, skips: 3, reverses: 3, draw2s: 3, draw4s: 2, skipAlls: 2, discardAlls: 3,
+		wild4: 8, wild6: 4, wild10: 4},
 }
 
 // ValidMode reports whether mode names a playable deck.
@@ -145,6 +156,9 @@ func NewDeck(mode string) []Card {
 		add(col, KindSkip, 0, spec.skips)
 		add(col, KindReverse, 0, spec.reverses)
 		add(col, KindDraw2, 0, spec.draw2s)
+		add(col, KindDiscardAll, 0, spec.discardAlls)
+		add(col, KindDraw4, 0, spec.draw4s)
+		add(col, KindSkipAll, 0, spec.skipAlls)
 	}
 	add(ColorWild, KindWild, 0, spec.wild)
 	add(ColorWild, KindWild4, 0, spec.wild4)

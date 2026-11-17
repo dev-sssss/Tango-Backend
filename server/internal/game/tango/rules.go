@@ -22,6 +22,14 @@ package tango
 //     them while they hold that one card; the hammered player draws two. A
 //     wrong hammer tap costs nothing.
 //   - The first player to empty their hand wins for their team; one round.
+//   - No Mercy (the game's 160-card deck) adds: coloured +4 (stacks like +2),
+//     Skip Everyone (the same player goes again), Discard All (also discards
+//     every other card of its colour), 0 passes every hand round the table in
+//     the direction of play, 7 swaps hands with a chosen player, and the
+//     25-card limit: a player who reaches 25 cards is out; the last player
+//     (or team) standing wins.
+//   - Match clock: when it runs out, the player with the fewest points left
+//     in hand wins.
 
 import (
 	"errors"
@@ -32,6 +40,7 @@ const (
 	PhaseTurn  = "turn"  // play a card, draw, or (with a stack) stack/draw/challenge
 	PhaseColor = "color" // pick a colour for a black card just played
 	PhaseKeep  = "keep"  // keep or play a drawn black plus
+	PhaseSwap  = "swap"  // No Mercy 7: choose whose hand to swap with
 	PhaseOver  = "over"
 )
 
@@ -53,6 +62,7 @@ const (
 	OpGameOver     int64 = 113
 	OpRematch      int64 = 114
 	OpError        int64 = 115
+	OpEffect       int64 = 116 // skip_all, discard_all, rotate, swap, time_up
 )
 
 // RNG supplies randomness (the server's NK implements it).
@@ -145,6 +155,9 @@ type Table struct {
 	Drawn     *Card        `json:"drawn,omitempty"`
 	Chal      *Challenge   `json:"chal,omitempty"`
 	Wild      *PendingWild `json:"wild,omitempty"`
+
+	// EndsAt is the match clock (server ms, 0 = no clock).
+	EndsAt int64 `json:"ends_at,omitempty"`
 
 	Over       bool   `json:"over"`
 	Winner     int    `json:"winner"`
@@ -259,7 +272,8 @@ func (t *Table) Teammates(a, b int) bool {
 // whose card it is).
 func (t *Table) Legal(c Card) bool {
 	if t.Pending > 0 {
-		return c.IsWildPlus() || (c.Kind == KindDraw2 && c.Color == t.Color)
+		// A black plus answers any stack; a coloured +2/+4 only in the colour in play.
+		return c.IsWildPlus() || (c.IsPlus() && !c.IsWild() && c.Color == t.Color)
 	}
 	if c.IsWild() || c.Color == t.Color {
 		return true
@@ -404,16 +418,54 @@ func (t *Table) commitPlay(seat, idx int, color string, now int64, auto bool) {
 		return
 	}
 	t.Color = c.Color
-	switch c.Kind {
-	case KindDraw2:
-		t.Pending += 2
+	noMercy := t.Mode == ModeNoMercy
+	switch {
+	case c.Kind == KindDraw2 || c.Kind == KindDraw4:
+		t.Pending += c.DrawAmount()
 		t.Chal = nil
 		t.beginTurn(t.Next(seat, 1), now)
-	case KindSkip:
+	case c.Kind == KindSkipAll:
+		t.emit(OpEffect, "skip_all", seat, map[string]any{"skipped": t.ActiveCount() - 1}, nil)
+		t.beginTurn(seat, now)
+	case c.Kind == KindDiscardAll:
+		kept, gone := p.Hand[:0:0], []Card{}
+		for _, x := range p.Hand {
+			if x.Color == c.Color {
+				gone = append(gone, x)
+			} else {
+				kept = append(kept, x)
+			}
+		}
+		p.Hand = kept
+		// The extra cards go under the played one, which stays on top.
+		t.Discard = append(append(t.Discard[:len(t.Discard)-1:len(t.Discard)-1], gone...), c)
+		t.emit(OpEffect, "discard_all", seat, map[string]any{"count": len(gone), "color": c.Color, "hand_count": len(p.Hand)}, gone)
+		if len(p.Hand) == 0 {
+			t.finish(seat, p.Team, "empty_hand")
+			return
+		}
+		p.Vulnerable = len(p.Hand) == 1 && !p.TangoArmed
+		t.beginTurn(t.Next(seat, 1), now)
+	case noMercy && c.Kind == KindNumber && c.Value == 0:
+		t.rotateHands(seat)
+		t.beginTurn(t.Next(seat, 1), now)
+	case noMercy && c.Kind == KindNumber && c.Value == 7:
+		targets := t.SwapTargets(seat)
+		switch len(targets) {
+		case 0:
+			t.beginTurn(t.Next(seat, 1), now)
+		case 1:
+			t.swapHands(seat, targets[0])
+			t.beginTurn(t.Next(seat, 1), now)
+		default:
+			t.Phase, t.PhaseSeat, t.Deadline = PhaseSwap, seat, now+t.TurnMs
+			t.emit(OpTurn, "turn", seat, t.turnData(), nil)
+		}
+	case c.Kind == KindSkip:
 		skipped := t.Next(seat, 1)
 		t.emit(OpTurn, "skipped", skipped, map[string]any{"by": seat}, nil)
 		t.beginTurn(t.Next(seat, 2), now)
-	case KindReverse:
+	case c.Kind == KindReverse:
 		t.Dir = -t.Dir
 		if t.ActiveCount() == 2 {
 			t.beginTurn(t.Next(seat, 2), now) // with two players Reverse acts as Skip
@@ -435,6 +487,109 @@ func (t *Table) applyColor(seat int, color string, now int64) {
 		t.Chal = &Challenge{Target: seat, Open: w.FirstOfStack, HadColor: w.HadColor, ColorBefore: w.ColorBefore}
 	}
 	t.beginTurn(t.Next(seat, 1), now)
+}
+
+// SwapTargets lists the players seat may swap hands with (everyone still in).
+func (t *Table) SwapTargets(seat int) []int {
+	out := []int{}
+	for i, q := range t.Players {
+		if i != seat && !q.Removed {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// Swap answers the 7: seat swaps hands with target.
+func (t *Table) Swap(seat, target int, now int64) error {
+	if t.Over {
+		return ruleErr("GAME_OVER")
+	}
+	if t.Phase != PhaseSwap || t.PhaseSeat != seat {
+		return ruleErr("NOT_YOUR_TURN")
+	}
+	q := t.player(target)
+	if q == nil || q.Removed || target == seat {
+		return ruleErr("BAD_TARGET")
+	}
+	t.swapHands(seat, target)
+	t.beginTurn(t.Next(seat, 1), now)
+	return nil
+}
+
+func (t *Table) swapHands(a, b int) {
+	pa, pb := t.Players[a], t.Players[b]
+	pa.Hand, pb.Hand = pb.Hand, pa.Hand
+	for _, p := range []*Player{pa, pb} {
+		p.TangoArmed = false
+		p.Vulnerable = false
+	}
+	t.emit(OpEffect, "swap", a, map[string]any{"target": b, "hand_count": len(pa.Hand), "target_hand_count": len(pb.Hand)}, nil)
+}
+
+// rotateHands passes every hand to the next player in the direction of play.
+func (t *Table) rotateHands(seat int) {
+	var order []int
+	s := seat
+	for i := 0; i < t.ActiveCount(); i++ {
+		order = append(order, s)
+		s = t.Next(s, 1)
+	}
+	if len(order) < 2 {
+		return
+	}
+	hands := make([][]Card, len(order))
+	for i, idx := range order {
+		hands[i] = t.Players[idx].Hand
+	}
+	for i, idx := range order {
+		p := t.Players[order[(i+1)%len(order)]]
+		p.Hand = hands[i]
+		_ = idx
+	}
+	for _, idx := range order {
+		t.Players[idx].TangoArmed, t.Players[idx].Vulnerable = false, false
+	}
+	t.emit(OpEffect, "rotate", seat, map[string]any{"dir": t.Dir}, nil)
+}
+
+// ApplyMercy puts out every No Mercy player holding 25 cards or more. Call it
+// after each action; it ends the round when one player or team is left.
+func (t *Table) ApplyMercy(now int64) {
+	if t.Mode != ModeNoMercy || t.Over {
+		return
+	}
+	for i, p := range t.Players {
+		if !p.Removed && len(p.Hand) >= MercyLimit {
+			t.Remove(i, "mercy", t.rng, now)
+			if t.Over {
+				return
+			}
+		}
+	}
+}
+
+// CheckClock ends the round when the match clock has run out: the player with
+// the fewest points left in hand wins (for their team). Reports whether it did.
+func (t *Table) CheckClock(now int64) bool {
+	if t.Over || t.EndsAt == 0 || now < t.EndsAt {
+		return false
+	}
+	best, bestPts := -1, 1<<30
+	for i, p := range t.Players {
+		if p.Removed {
+			continue
+		}
+		if pts := handPoints(p.Hand); pts < bestPts || (pts == bestPts && len(p.Hand) < len(t.Players[best].Hand)) {
+			best, bestPts = i, pts
+		}
+	}
+	if best < 0 {
+		return false
+	}
+	t.emit(OpEffect, "time_up", best, map[string]any{"points": bestPts}, nil)
+	t.finish(best, t.Players[best].Team, "time_up")
+	return true
 }
 
 // ChooseColor sets the colour of the black card seat just played.
@@ -582,10 +737,23 @@ func (t *Table) Timeout(now int64, rng RNG) (int, bool) {
 		t.applyColor(seat, BestColor(t.Players[seat].Hand, rng), now)
 	case PhaseKeep:
 		_ = t.KeepOrPlay(seat, false, "", now)
+	case PhaseSwap:
+		_ = t.Swap(seat, t.FewestCards(seat), now)
 	case PhaseTurn:
 		_ = t.Draw(seat, now)
 	}
 	return seat, true
+}
+
+// FewestCards is the other player (still in) holding the fewest cards.
+func (t *Table) FewestCards(seat int) int {
+	best := -1
+	for _, i := range t.SwapTargets(seat) {
+		if best < 0 || len(t.Players[i].Hand) < len(t.Players[best].Hand) {
+			best = i
+		}
+	}
+	return best
 }
 
 // BestColor picks the colour the hand holds most of.
@@ -663,10 +831,11 @@ func (t *Table) Remove(seat int, reason string, rng RNG, now int64) {
 	t.Pile = append(append([]Card{}, p.Hand...), t.Pile...)
 	p.Hand = nil
 	t.emit(OpPlayerStatus, "player_removed", seat, map[string]any{"reason": reason}, nil)
-	teams := map[int]bool{}
+	teams, last := map[int]bool{}, -1
 	for _, q := range t.Players {
 		if !q.Removed {
 			teams[q.Team] = true
+			last = q.Seat
 		}
 	}
 	if len(teams) <= 1 {
@@ -674,7 +843,11 @@ func (t *Table) Remove(seat int, reason string, rng RNG, now int64) {
 		for tm := range teams {
 			win = tm
 		}
-		t.finish(-1, win, "forfeit")
+		if reason == "mercy" {
+			t.finish(last, win, "last_standing")
+		} else {
+			t.finish(-1, win, "forfeit")
+		}
 		return
 	}
 	if t.PhaseSeat == seat || t.Turn == seat {

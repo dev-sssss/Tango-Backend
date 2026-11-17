@@ -99,6 +99,8 @@ func (h *harness) humanPlays(uid string) {
 		h.send(uid, OpKeepOrPlay, map[string]any{"play": false})
 	case "challenge":
 		h.send(uid, OpChallengeTop, map[string]any{})
+	case "swap":
+		h.send(uid, OpSwap, map[string]any{"seat": mv.Target})
 	default:
 		h.send(uid, OpDraw, map[string]any{})
 	}

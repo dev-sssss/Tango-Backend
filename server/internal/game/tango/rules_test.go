@@ -60,7 +60,7 @@ func TestDeckSizes(t *testing.T) {
 	if n := len(NewDeck(ModeClassic)); n != 108 {
 		t.Fatalf("classic deck %d", n)
 	}
-	if n := len(NewDeck(ModeNoMercy)); n != 114 {
+	if n := len(NewDeck(ModeNoMercy)); n != 160 {
 		t.Fatalf("no mercy deck %d", n)
 	}
 	seen := map[int]bool{}
@@ -346,7 +346,7 @@ func TestTimeoutDraws(t *testing.T) {
 // actions in every mode and format and checks invariants after each step.
 func TestRandomGamesConserveCards(t *testing.T) {
 	for _, mode := range []string{ModeClassic, ModeNoMercy} {
-		for _, format := range []string{Format1v1, Format2v2, Format4v4} {
+		for _, format := range []string{Format1v1, Format2v2, Format4v4, Format4P, Format8P} {
 			for seed := int64(1); seed <= 300; seed++ {
 				playRandom(t, mode, format, seed)
 			}
@@ -372,6 +372,9 @@ func playRandom(t *testing.T, mode, format string, seed int64) {
 			mustOK(t, tb.ChooseColor(seat, Colors[rng.RandInt(0, 3)], now))
 		case PhaseKeep:
 			mustOK(t, tb.KeepOrPlay(seat, rng.RandInt(0, 1) == 0, "", now))
+		case PhaseSwap:
+			targets := tb.SwapTargets(seat)
+			mustOK(t, tb.Swap(seat, targets[rng.RandInt(0, len(targets)-1)], now))
 		case PhaseTurn:
 			pl := tb.Playable(seat)
 			r := rng.RandInt(0, 9)
@@ -400,6 +403,12 @@ func playRandom(t *testing.T, mode, format string, seed int64) {
 		}
 		if step == 300 && n > 2 && rng.RandInt(0, 3) == 0 {
 			tb.Remove(rng.RandInt(0, n-1), "left", rng, now)
+		}
+		tb.ApplyMercy(now)
+		for _, p := range tb.Players {
+			if mode == ModeNoMercy && !p.Removed && len(p.Hand) >= MercyLimit {
+				t.Fatalf("%s %s seed %d: seat %d holds %d cards", mode, format, seed, p.Seat, len(p.Hand))
+			}
 		}
 		tb.TakeEvents()
 		count := len(tb.Pile) + len(tb.Discard)

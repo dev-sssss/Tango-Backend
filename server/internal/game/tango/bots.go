@@ -36,8 +36,9 @@ func NewBotPlayer(rng RNG, id string, fee int64, taken map[string]bool) *Player 
 
 // Move is a bot decision.
 type Move struct {
-	Kind   string // play, draw, color, keep, play_drawn, challenge
+	Kind   string // play, draw, color, keep, play_drawn, challenge, swap
 	CardID int
+	Target int // swap: whose hand to take
 	Color  string
 	Tango  bool // press TANGO! first
 }
@@ -48,6 +49,8 @@ func DecideBot(t *Table, seat int, rng RNG) Move {
 	switch t.Phase {
 	case PhaseColor:
 		return Move{Kind: "color", Color: BestColor(p.Hand, rng)}
+	case PhaseSwap:
+		return Move{Kind: "swap", Target: t.FewestCards(seat)}
 	case PhaseKeep:
 		if rng.RandInt(1, 100) <= 70 {
 			return Move{Kind: "play_drawn", Color: BestColor(without(p.Hand, t.Drawn.ID), rng), Tango: armTango(p, rng)}
@@ -127,6 +130,8 @@ func pickCard(t *Table, seat int, playable []Card) Card {
 			}
 		case c.IsWild():
 			score = -40
+		case c.Kind == KindDiscardAll:
+			score += colorCount[c.Color] * 15 // empties a whole colour
 		case c.Kind != KindNumber:
 			score += 5
 			if threat {

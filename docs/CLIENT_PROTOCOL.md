@@ -89,6 +89,7 @@ Send with `socket.SendMatchStateAsync(matchId, opCode, json)`.
 | 10 | FORFEIT | `{}` |
 | 11 | CHOOSE_COLOR | `{"color":"green"}` |
 | 12 | START | `{}` — private room host: start now (empty seats get bots) |
+| 13 | SWAP | `{"seat":2}` — No Mercy 7: whose hand to swap with (phase `swap`) |
 
 ### Server → app
 
@@ -114,6 +115,7 @@ before it for animations.
 | 113 | `game_over` | `results[] {seat, rank, name, points, winner, coins, trophies, level}`, `winner_team`, `rematch_allowed` |
 | 114 | `rematch` | `votes[]`, `needed` |
 | 115 | `error` | `code` (e.g. `NOT_YOUR_TURN`, `ILLEGAL_CARD`, `MUST_STACK_OR_DRAW`, `CANNOT_CHALLENGE`, `TOO_MANY_CARDS`) |
+| 116 | `skip_all` / `discard_all` / `rotate` / `swap` / `time_up` | No Mercy effects (`skipped`; `count`, `color`; `dir`; `target`) and the match clock ending (`seat` = winner, `points`) |
 
 All times are server milliseconds; every message has `server_time_ms` to
 correct the device clock for countdowns.
@@ -142,11 +144,21 @@ correct the device clock for countdowns.
 * `hand` is present only for you and, in 2v2/4v4, your teammates.
 * `playable` lists the card ids you may play right now: make those glow.
 * Card kinds: `number` (with `value`), `skip`, `reverse`, `draw2`, `wild`,
-  `wild4`, `wild6`, `wild10`. Black cards have `color: "wild"`; the colour in
-  play is `game.color`.
+  `wild4`, `wild6`, `wild10`; No Mercy adds coloured `draw4`, `skip_all` and
+  `discard_all`. Black cards have `color: "wild"`; the colour in play is
+  `game.color`.
+* No Mercy (160 cards): 0 passes every hand in the direction of play, 7 swaps
+  hands with a chosen player, and a player who reaches 25 cards is out
+  (`player_removed` with `reason: "mercy"`); the last player or team standing
+  wins.
+* Match clock: `game.ends_at_ms` (Classic 3 min, No Mercy 5 min, or the room's
+  `settings.match_minutes` 3/5/10). When it runs out the fewest points win
+  (`game.over_reason: "time_up"`). Turns are 10 s by default; three missed
+  turns in a row remove a player. Everyone who finishes a match earns 3
+  diamonds (`results[].diamonds`).
 * Phases: `turn` (play/draw, or stack/draw/challenge when `pending > 0`),
   `color` (choose a colour), `keep` (keep or play the drawn black plus),
-  `over`.
+  `swap` (No Mercy 7: pick a seat from `game.swap_targets`), `over`.
 * Teams sit alternately (seats 0/2 vs 1/3 in 2v2).
 * `rev` only grows; ignore any state with a lower `rev` than you have.
 

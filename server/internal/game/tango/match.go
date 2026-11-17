@@ -39,6 +39,7 @@ const (
 	OpForfeit         int64 = 10 // {}
 	OpChooseColor     int64 = 11 // {"color":"green"}
 	OpStart           int64 = 12 // private room host: start now (empty seats get bots)
+	OpSwap            int64 = 13 // {"seat":2} — No Mercy 7: whose hand to swap with
 )
 
 const (
@@ -49,20 +50,36 @@ const (
 	emptyMatchMs          = 30000
 	disconnectedTurnMs    = 5000
 	maxDisconnectedMisses = 3
-	maxIdleMisses         = 5
+	maxIdleMisses         = 3 // three missed turns in a row and you are out (the game's rule)
 	publicEndMs           = 15000
 	privateRematchMs      = 60000
 	emoteCooldownMs       = 1500
 	hammerCooldownMs      = 600
-	defaultTurnSeconds    = 15
+	defaultTurnSeconds    = 10
+	matchDiamonds         = 3    // every player who finishes a match earns 3 diamonds
+	dealGraceMs           = 5000 // the match clock starts once the cards are dealt
 )
+
+// MatchClockMs is the match length: Classic three minutes, No Mercy five,
+// or what the room's host picked.
+func MatchClockMs(mode string, minutes int) int64 {
+	if minutes <= 0 {
+		minutes = 3
+		if mode == ModeNoMercy {
+			minutes = 5
+		}
+	}
+	return int64(minutes) * 60000
+}
 
 // Settings are chosen when creating a private room.
 type Settings struct {
-	TurnSeconds int  `json:"turn_seconds"`
-	Emotes      bool `json:"emotes"`
-	Spectators  bool `json:"spectators"`
-	Mic         bool `json:"mic"`
+	TurnSeconds int `json:"turn_seconds"`
+	// MatchMinutes is the match clock chosen by a room's host (0 = the mode's usual length).
+	MatchMinutes int  `json:"match_minutes,omitempty"`
+	Emotes       bool `json:"emotes"`
+	Spectators   bool `json:"spectators"`
+	Mic          bool `json:"mic"`
 }
 
 // Seat is a player's place at the table plus connection bookkeeping.
@@ -195,6 +212,9 @@ func (m *Match) Init(mc *game.MatchContext, params map[string]any) (int, string)
 	st := Settings{TurnSeconds: defaultTurnSeconds, Emotes: true}
 	if sm, ok := params["settings"].(map[string]any); ok {
 		st.TurnSeconds = int(numParam(sm["turn_seconds"], defaultTurnSeconds))
+		if mm := int(numParam(sm["match_minutes"], 0)); mm == 3 || mm == 5 || mm == 10 {
+			st.MatchMinutes = mm
+		}
 		st.Emotes = boolParam(sm["emotes"], true)
 		st.Spectators = boolParam(sm["spectators"], false)
 		st.Mic = boolParam(sm["mic"], false)
@@ -490,6 +510,8 @@ func (m *Match) handle(ctx context.Context, d game.Dispatcher, msg game.MatchMes
 		err = t.ChooseColor(seat, strParam(data["color"], ""), now)
 	case OpChallengeTop:
 		err = t.ChallengeTop(seat, now)
+	case OpSwap:
+		err = t.Swap(seat, int(numParam(data["seat"], -1)), now)
 	case OpPressTango:
 		err = t.PressTango(seat)
 	case OpHammerTap:
@@ -508,6 +530,7 @@ func (m *Match) handle(ctx context.Context, d game.Dispatcher, msg game.MatchMes
 		return
 	}
 	st.IdleMisses = 0
+	t.ApplyMercy(now)
 	m.flush(d)
 	if t.Over {
 		m.finishRound(ctx, d, now)
@@ -539,6 +562,11 @@ func (m *Match) playTick(ctx context.Context, d game.Dispatcher, now int64) {
 		m.finishRound(ctx, d, now)
 		return
 	}
+	if t.CheckClock(now) {
+		m.flush(d)
+		m.finishRound(ctx, d, now)
+		return
+	}
 	m.botTick(now)
 	m.botHammers(now)
 	// Disconnected players get a short clock so the table keeps moving.
@@ -561,6 +589,7 @@ func (m *Match) playTick(ctx context.Context, d game.Dispatcher, now int64) {
 			}
 		}
 	}
+	t.ApplyMercy(now)
 	m.flush(d)
 	if t.Over {
 		m.finishRound(ctx, d, now)
@@ -601,6 +630,8 @@ func (m *Match) botTick(now int64) {
 		err = t.KeepOrPlay(seat, false, "", now)
 	case "challenge":
 		err = t.ChallengeTop(seat, now)
+	case "swap":
+		err = t.Swap(seat, mv.Target, now)
 	default:
 		err = t.Draw(seat, now)
 	}
@@ -661,6 +692,7 @@ func (m *Match) startRound(ctx context.Context, d game.Dispatcher, now int64) {
 		players[i] = st.Player
 	}
 	s.Table = NewTable(s.Mode, s.Format, int64(s.Settings.TurnSeconds)*1000, players, m.nk, now)
+	s.Table.EndsAt = now + dealGraceMs + MatchClockMs(s.Mode, s.Settings.MatchMinutes)
 	s.Table.TakeEvents()
 	s.Status, s.StartedMs = StatusPlaying, now
 	for _, st := range s.Seats {
@@ -721,6 +753,12 @@ func (m *Match) finishRound(ctx context.Context, d game.Dispatcher, now int64) {
 	}
 	t := s.Table
 	s.Result = ComputeResult(t, s.Fee)
+	for i := range s.Result {
+		// Everyone who played the match to the end earns diamonds (not a player who left).
+		if !s.Result[i].Removed && !s.Result[i].bot {
+			s.Result[i].Diamonds = matchDiamonds
+		}
+	}
 	s.OverReason = t.OverReason
 	if !s.Settled {
 		m.settle(ctx)
@@ -749,7 +787,8 @@ func (m *Match) publicResults() []map[string]any {
 	out := make([]map[string]any, 0, len(m.s.Result))
 	for _, r := range m.s.Result {
 		out = append(out, map[string]any{"seat": r.Seat, "rank": r.Rank, "user_id": r.UserID, "name": r.Name, "avatar": r.Avatar,
-			"frame": r.Frame, "team": r.Team, "points": r.Points, "winner": r.Winner, "removed": r.Removed, "coins": r.Coins,
+			"frame": r.Frame, "team": r.Team, "points": r.Points, "winner": r.Winner, "removed": r.Removed, "out": r.Out, "coins": r.Coins,
+			"diamonds": r.Diamonds,
 			"trophies": r.Trophies, "level": LevelFor(m.trophiesAfter(r))})
 	}
 	return out
@@ -775,11 +814,18 @@ func (m *Match) settle(ctx context.Context) {
 			continue
 		}
 		var wallets []*game.WalletUpdate
+		change := map[string]int64{}
 		if st.Escrowed {
 			if refund := s.Fee + r.Coins; refund > 0 {
-				wallets = append(wallets, &game.WalletUpdate{UserID: r.UserID, Changeset: map[string]int64{"coins": refund},
-					Metadata: map[string]any{"reason": "match_settle", "match_id": s.MatchID, "round": s.Round, "rank": r.Rank, "delta": r.Coins}})
+				change["coins"] = refund
 			}
+		}
+		if r.Diamonds > 0 {
+			change["diamonds"] = r.Diamonds
+		}
+		if len(change) > 0 {
+			wallets = append(wallets, &game.WalletUpdate{UserID: r.UserID, Changeset: change,
+				Metadata: map[string]any{"reason": "match_settle", "match_id": s.MatchID, "round": s.Round, "rank": r.Rank, "delta": r.Coins}})
 		}
 		err := m.nk.MultiUpdate(ctx,
 			[]*game.Write{{Collection: "match_settle", Key: key, UserID: r.UserID, Value: map[string]any{"coins": r.Coins, "trophies": r.Trophies, "rank": r.Rank}, Version: "*"}},

@@ -108,9 +108,12 @@ func (s *Service) createRoom(c *Context, payload string) (string, error) {
 			return refuse("INSUFFICIENT_COINS")
 		}
 	}
-	settings := map[string]any{"turn_seconds": int64(15), "emotes": true, "spectators": false, "mic": false}
+	settings := map[string]any{"turn_seconds": int64(10), "emotes": true, "spectators": false, "mic": false}
 	if sm, isMap := data["settings"].(map[string]any); isMap {
-		ts := num(sm, "turn_seconds", 15)
+		ts := num(sm, "turn_seconds", 10)
+		if mm := num(sm, "match_minutes", 0); mm == 3 || mm == 5 || mm == 10 {
+			settings["match_minutes"] = mm
+		}
 		valid := false
 		for _, o := range cfg.TurnSecondsOptions {
 			if int64(o) == ts {

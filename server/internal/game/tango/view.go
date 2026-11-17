@@ -130,7 +130,7 @@ func (m *Match) view(seat int) map[string]any {
 	if t := s.Table; t != nil && s.Status != StatusStarting {
 		g := map[string]any{"top": t.Top(), "color": t.Color, "turn": t.Turn, "dir": t.Dir, "pending": t.Pending,
 			"phase": t.Phase, "phase_seat": t.PhaseSeat, "deadline_ms": t.Deadline, "draw_count": len(t.Pile),
-			"discard_count": len(t.Discard), "over": t.Over}
+			"discard_count": len(t.Discard), "over": t.Over, "ends_at_ms": t.EndsAt, "over_reason": t.OverReason}
 		recent := t.Discard
 		if len(recent) > 5 {
 			recent = recent[len(recent)-5:]
@@ -141,6 +141,9 @@ func (m *Match) view(seat int) map[string]any {
 			g["can_challenge"] = t.CanChallenge(seat)
 			if t.Phase == PhaseKeep && t.PhaseSeat == seat && t.Drawn != nil {
 				g["drawn"] = *t.Drawn
+			}
+			if t.Phase == PhaseSwap && t.PhaseSeat == seat {
+				g["swap_targets"] = t.SwapTargets(seat)
 			}
 		}
 		v["game"] = g
