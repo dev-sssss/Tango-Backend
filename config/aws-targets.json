@@ -7,6 +7,6 @@
     "deploy_role_arn": "arn:aws:iam::521503820723:role/tango-nonprod-infrastructure",
     "tango_dir": "/opt/tango-server",
     "public_host": "tango-backend.sssss.co.in",
-    "google_client_ids": ""
+    "google_client_ids": "198711813089-bcuatssgv8ml6ieehuletpfec3r2f6t9.apps.googleusercontent.com"
   }
 }
