@@ -12,6 +12,9 @@ type Social interface {
 	// FriendAdd sends a request to the player with this username or friend
 	// code (or accepts theirs if they already asked).
 	FriendAdd(ctx context.Context, userID, query string) (map[string]any, error)
+	// FriendFind shows the player with this friend code or username, without
+	// sending a request.
+	FriendFind(ctx context.Context, userID, query string) (map[string]any, error)
 	// FriendAction applies accept, decline, cancel, remove, block or unblock
 	// to the relation with otherID.
 	FriendAction(ctx context.Context, userID, otherID, action string) (map[string]any, error)

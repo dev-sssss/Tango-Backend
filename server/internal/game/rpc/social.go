@@ -41,6 +41,18 @@ func (s *Service) friendsAdd(c *Context, payload string) (string, error) {
 	return socialResult(soc.FriendAdd(c.context(), c.UserID, q))
 }
 
+func (s *Service) friendsFind(c *Context, payload string) (string, error) {
+	soc, ok := s.social(c)
+	if !ok {
+		return refuse("UNAVAILABLE")
+	}
+	q := str(parse(payload), "query", 64)
+	if q == "" {
+		return refuse("NOT_FOUND")
+	}
+	return socialResult(soc.FriendFind(c.context(), c.UserID, q))
+}
+
 var friendActions = map[string]bool{"accept": true, "decline": true, "cancel": true, "remove": true, "block": true, "unblock": true}
 
 func (s *Service) friendsAction(c *Context, payload string) (string, error) {

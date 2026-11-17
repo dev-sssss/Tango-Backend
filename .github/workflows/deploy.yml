@@ -149,7 +149,9 @@ jobs:
           RESULT: ${{ runner.temp }}/tango-deploy-result.json
         run: |
           base=$(jq -r .base "$RESULT"); key=$(jq -r .server_key "$RESULT")
-          echo "::add-mask::$key"
+          # The server key is the client key every copy of the app carries (Nakama's
+          # design), not a secret: it is shown so it can go into the Unity project.
+          echo "Server key for the Unity client: $key"
           hostport=${base#*://}; port=${hostport##*:}
           [ "$port" = "$hostport" ] && port=$([ "${base%%://*}" = https ] && echo 443 || echo 80)
           if ! curl -sS -o /dev/null --max-time 10 "$base/healthcheck"; then
@@ -167,7 +169,7 @@ jobs:
             echo "| Scheme | \`${base%%://*}\` |"
             echo "| Host | \`${hostport%%:*}\` |"
             echo "| Port | \`$port\` |"
-            echo "| Server key | in \`$(jq -r .dir "$RESULT")/connection.txt\` on the server |"
+            echo "| Server key | \`$key\` |"
             echo "| Health check | $base/healthcheck |"
             echo
             echo "Release \`$(jq -r .release "$RESULT")\` ($(jq -r .arch "$RESULT")) in \`$(jq -r .dir "$RESULT")\`"

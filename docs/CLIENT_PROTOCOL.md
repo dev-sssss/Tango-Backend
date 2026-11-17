@@ -15,9 +15,11 @@ realtime socket.
 | Setting | Value |
 |---|---|
 | Scheme | `https` |
-| Host | shown in the pipeline summary (the server's fixed IP address, e.g. `13.234.5.6`, until you use your own domain) |
-| Port | `443` |
+| Host | `tango-backend.sssss.co.in` (nonprod) |
+| Port | `9443` (HTTPS) |
 | Server key | shown in the pipeline summary (`tango-…`) |
+
+The Unity game reads these from `Assets/Resources/TangoServer.json`.
 
 ```csharp
 var client  = new Nakama.Client("https", host, 443, serverKey);
@@ -42,16 +44,17 @@ with `"success": true` or `"success": false, "error": "<CODE>"`.
 | `tango.shop.catalog` | `{}` | `items[] {id, category, name, price{coins\|diamonds}, rarity, owned}`, `iap_products[]` |
 | `tango.shop.purchase` | `{"item_id":"frame_gold"}` | `wallet`. Errors: `INSUFFICIENT_FUNDS`, `ALREADY_OWNED`, `UNKNOWN_ITEM` |
 | `tango.inventory.get` | `{}` | `owned[]`, `equipped {avatar, frame, badge, card_back, table}` |
-| `tango.inventory.equip` | `{"category":"frame","item_id":"frame_gold"}` | `profile`. Categories: avatar, frame, badge, card_back, table |
+| `tango.inventory.equip` | `{"category":"frame","item_id":"frame_sakura"}` | `profile`. Categories: avatar, frame, badge, card_back, table, effect. Item ids are `<kind>_<item>` as in the game's shop: `avatar_kai`, `frame_sakura`, `badge_aurora`, `back_frost`, `table_moonlit`, `emote_party`, `effect_flame` |
 | `tango.ads.claim_reward` | `{}` after a completed rewarded ad | `coins` (250–300), `remaining_today`, `wallet`. Limits: 10/day, 30 s apart |
 | `tango.iap.verify_google` | `{"receipt":"<purchase JSON from Play Billing>"}` | `credited`, `wallet` (enable with `GOOGLE_IAP_ENABLED`) |
 | `tango.dev.grant` | `{}` | +10,000 coins, +1,000 diamonds. **Non-prod only** (the tap-coins-three-times shortcut) |
-| `tango.match.quick_join` | `{"mode":"classic"\|"no_mercy","format":"1v1"\|"2v2"\|"4v4","fee":200}` | `match_id` → join it on the socket. Fees: 200, 400, 1000, 2000, 5000 |
+| `tango.match.quick_join` | `{"mode":"classic"\|"no_mercy","format":"1v1"\|"2v2"\|"4v4"\|"4p"\|"8p","fee":200}` | `match_id` → join it on the socket. Fees: 200, 400, 1000, 2000, 5000. `4p`/`8p`: everyone for themselves |
 | `tango.room.create` | `{"mode","format","fee":0,"settings":{"turn_seconds":15,"emotes":true,"spectators":false,"mic":false}}` | `room_code` (6 digits), `match_id` |
 | `tango.room.join` | `{"room_code":"123456"}` | `match_id`. Errors: `ROOM_NOT_FOUND`, `ROOM_STARTED`, `ROOM_FULL` |
 | `tango.match.active` | `{}` | `match_id` of a game still running (rejoin after a crash), or `null` |
 | `tango.match.forfeit` | `{}` | leaves the running game for good |
 | `tango.friends.list` | `{}` | friends (name, avatar, frame, trophies, level, status online/in_game/offline, last_seen), requests, your 8-character **friend code** |
+| `tango.friends.find` | `{"query":"AB12CD34"}` | `player` (name, avatar, trophies, status) without sending anything; `not_found`, `self` |
 | `tango.friends.add` | `{"query":"AB12CD34"}` | sends a request (friend code or username) |
 | `tango.friends.action` | `{"user_id":"…","action":"accept"\|"decline"\|"cancel"\|"remove"\|"block"\|"unblock"}` | |
 | `tango.friends.invite` | `{"user_id":"…","room_code":"123456","mode":"classic"}` | invite shows in the friend's list |

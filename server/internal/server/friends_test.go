@@ -89,6 +89,15 @@ func TestFriendsRequestsBlocksAndPresence(t *testing.T) {
 	if r, _ := f.FriendAdd(ctx, a, "nobody"); r["error"] != "not_found" {
 		t.Fatalf("unknown: %v", r)
 	}
+	if r, err := f.FriendFind(ctx, a, "bob"); err != nil || r["player"].(map[string]any)["user_id"] != b {
+		t.Fatalf("find: %v %v", r, err)
+	}
+	if r, _ := f.FriendFind(ctx, a, "alice"); r["error"] != "self" {
+		t.Fatalf("find self: %v", r)
+	}
+	if got := ids(list(t, f, b)["incoming"]); len(got) != 0 {
+		t.Fatalf("finding sent a request: %v", got)
+	}
 	if r, _ := f.FriendAdd(ctx, a, "alice"); r["error"] != "self" {
 		t.Fatalf("self: %v", r)
 	}

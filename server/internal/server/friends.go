@@ -362,6 +362,39 @@ func dropRelation(ctx context.Context, tx pgx.Tx, a, b string) error {
 	return err
 }
 
+// FriendFind looks a player up by friend code or username without sending
+// anything, so the app can show who it found before the request goes out.
+func (f *Friends) FriendFind(ctx context.Context, userID, query string) (map[string]any, error) {
+	target, err := f.resolve(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if target == "" {
+		return refuse("not_found")
+	}
+	if target == userID {
+		return refuse("self")
+	}
+	var r friendRow
+	err = f.db.QueryRow(ctx, `SELECT `+profileCols+` FROM users u `+profileJoins+` WHERE u.id = $1::uuid`, target).
+		Scan(&r.UserID, &r.Username, &r.Name, &r.Avatar, &r.Frame, &r.Trophies, &r.LastSeen, &r.InMatch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return refuse("not_found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	var blocked bool
+	if err := f.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM friendship WHERE user_id = $1 AND friend_id = $2 AND state = 3)`,
+		target, userID).Scan(&blocked); err != nil {
+		return nil, err
+	}
+	if blocked {
+		return refuse("not_found") // never reveal a block
+	}
+	return friendsOK(map[string]any{"player": r.public(time.Now())})
+}
+
 func (f *Friends) FriendAdd(ctx context.Context, userID, query string) (map[string]any, error) {
 	target, err := f.resolve(ctx, query)
 	if err != nil {
@@ -659,6 +692,9 @@ func (f *Friends) rewardReferrer(ctx context.Context, invitee string) error {
 // PgNK forwards the friend RPCs to the server's Friends (game.Social).
 func (n *PgNK) FriendsList(ctx context.Context, userID string) (map[string]any, error) {
 	return n.friends.FriendsList(ctx, userID)
+}
+func (n *PgNK) FriendFind(ctx context.Context, userID, query string) (map[string]any, error) {
+	return n.friends.FriendFind(ctx, userID, query)
 }
 func (n *PgNK) FriendAdd(ctx context.Context, userID, query string) (map[string]any, error) {
 	return n.friends.FriendAdd(ctx, userID, query)

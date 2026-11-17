@@ -113,6 +113,7 @@ func (s *Service) Registry() map[string]*RPC {
 		// social
 		{ID: "tango.friends.list", Fn: s.friendsList, Access: AccessUser},
 		{ID: "tango.friends.add", Fn: s.friendsAdd, Access: AccessUser},
+		{ID: "tango.friends.find", Fn: s.friendsFind, Access: AccessUser},
 		{ID: "tango.friends.action", Fn: s.friendsAction, Access: AccessUser},
 		{ID: "tango.friends.invite", Fn: s.friendsInvite, Access: AccessUser},
 		{ID: "tango.leaderboard.get", Fn: s.getLeaderboard, Access: AccessUser},
