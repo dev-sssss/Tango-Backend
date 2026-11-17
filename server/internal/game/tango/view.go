@@ -31,7 +31,7 @@ func (m *Match) canSee(viewer, seat int) bool {
 	if viewer == seat {
 		return true
 	}
-	return m.s.Format != Format1v1 && TeamOf(m.s.Format, viewer) == TeamOf(m.s.Format, seat)
+	return IsTeamFormat(m.s.Format) && TeamOf(m.s.Format, viewer) == TeamOf(m.s.Format, seat)
 }
 
 func (m *Match) send(d game.Dispatcher, p game.Presence, op int64, payload map[string]any) {

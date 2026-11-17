@@ -79,12 +79,16 @@ func TestPurchaseAndEquip(t *testing.T) {
 	if r := call(t, s, c, "tango.inventory.equip", `{"category":"frame","item_id":"frame_silver"}`); r["error"] != "NOT_OWNED" {
 		t.Fatalf("%v", r)
 	}
-	if r := call(t, s, c, "tango.shop.purchase", `{"item_id":"frame_gold"}`); r["error"] != "INSUFFICIENT_FUNDS" {
+	if r := call(t, s, c, "tango.shop.purchase", `{"item_id":"frame_gold"}`); r["error"] != "ALREADY_OWNED" {
+		t.Fatalf("free default item: %v", r)
+	}
+	// 20 starting diamonds do not buy a 60-diamond effect set.
+	if r := call(t, s, c, "tango.shop.purchase", `{"item_id":"effect_legend"}`); r["error"] != "INSUFFICIENT_FUNDS" {
 		t.Fatalf("%v", r)
 	}
 	_, _, _ = nk.WalletUpdate(context.Background(), uid, map[string]int64{"coins": 5000}, nil, false)
 	r := call(t, s, c, "tango.shop.purchase", `{"item_id":"frame_silver"}`)
-	if r["success"] != true || nk.Wallet(uid)["coins"] != 4000 {
+	if r["success"] != true || nk.Wallet(uid)["coins"] != 6850 {
 		t.Fatalf("%v %v", r, nk.Wallet(uid))
 	}
 	if r := call(t, s, c, "tango.shop.purchase", `{"item_id":"frame_silver"}`); r["error"] != "ALREADY_OWNED" {
@@ -93,6 +97,9 @@ func TestPurchaseAndEquip(t *testing.T) {
 	r = call(t, s, c, "tango.inventory.equip", `{"category":"frame","item_id":"frame_silver"}`)
 	if r["profile"].(map[string]any)["frame"] != "frame_silver" {
 		t.Fatalf("%v", r)
+	}
+	if r := call(t, s, c, "tango.inventory.equip", `{"category":"effect","item_id":"effect_classic"}`); r["profile"].(map[string]any)["effect"] != "effect_classic" {
+		t.Fatalf("effect slot: %v", r)
 	}
 	inv := call(t, s, c, "tango.inventory.get", "")
 	if inv["equipped"].(map[string]any)["frame"] != "frame_silver" {

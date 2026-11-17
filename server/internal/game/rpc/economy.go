@@ -24,6 +24,7 @@ var equipField = map[string]func(p *game.Profile, id string){
 	"badge":     func(p *game.Profile, id string) { p.Badge = id },
 	"card_back": func(p *game.Profile, id string) { p.CardBack = id },
 	"table":     func(p *game.Profile, id string) { p.TableSkin = id },
+	"effect":    func(p *game.Profile, id string) { p.Effect = id },
 }
 
 func isNegative(err error) bool { return err != nil && strings.Contains(err.Error(), "negative") }
@@ -85,7 +86,7 @@ func (s *Service) getInventory(c *Context, payload string) (string, error) {
 		return "", err
 	}
 	return ok(map[string]any{"owned": owned, "equipped": map[string]any{"avatar": p.Avatar, "frame": p.Frame, "badge": p.Badge,
-		"card_back": p.CardBack, "table": p.TableSkin}})
+		"card_back": p.CardBack, "table": p.TableSkin, "effect": p.Effect}})
 }
 
 func (s *Service) purchaseItem(c *Context, payload string) (string, error) {

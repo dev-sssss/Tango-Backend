@@ -38,6 +38,8 @@ const (
 	Format1v1    = "1v1"
 	Format2v2    = "2v2"
 	Format4v4    = "4v4"
+	Format4P     = "4p" // four players, everyone for themselves
+	Format8P     = "8p" // eight players, everyone for themselves
 	HandSize     = 7
 	minPlayers   = 2
 	pointsAction = 20
@@ -156,21 +158,28 @@ func FormatPlayers(format string) int {
 	switch format {
 	case Format2v2:
 		return 4
-	case Format4v4:
+	case Format4v4, Format8P:
 		return 8
+	case Format4P:
+		return 4
 	}
 	return 2
 }
 
+// IsTeamFormat reports a team format (2v2, 4v4): partners see each other's
+// hands and win together.
+func IsTeamFormat(format string) bool { return format == Format2v2 || format == Format4v4 }
+
 // ValidFormat reports whether format is supported.
 func ValidFormat(format string) bool {
-	return format == Format1v1 || format == Format2v2 || format == Format4v4
+	return format == Format1v1 || format == Format2v2 || format == Format4v4 || format == Format4P || format == Format8P
 }
 
 // TeamOf returns a seat's team. Teams alternate around the table so a
-// player's neighbours are always opponents; in 1v1 every seat is its own team.
+// player's neighbours are always opponents; in 1v1 and the free-for-all
+// formats every seat is its own team.
 func TeamOf(format string, seat int) int {
-	if format == Format1v1 {
+	if !IsTeamFormat(format) {
 		return seat
 	}
 	return seat % 2

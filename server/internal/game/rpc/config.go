@@ -41,7 +41,7 @@ func defaultAppConfig() AppConfig {
 		EntryFees: []int64{200, 400, 1000, 2000, 5000}, StartingCoins: 2000, StartingDiamonds: 20,
 		AdRewardMin: 250, AdRewardMax: 300, AdDailyCap: 10, AdCooldownSec: 30,
 		TurnSecondsOptions: []int{10, 15, 20, 30}, LobbyWaitSeconds: 15, MinClientVersion: "0.0.0",
-		Formats: []string{"1v1", "2v2", "4v4"}, Modes: []string{"classic", "no_mercy"},
+		Formats: []string{"1v1", "2v2", "4v4", "4p", "8p"}, Modes: []string{"classic", "no_mercy"},
 	}
 }
 
@@ -68,7 +68,7 @@ func (c AppConfig) feeAllowed(fee int64) bool {
 // CatalogItem is a cosmetic sold in the shop.
 type CatalogItem struct {
 	ID       string           `json:"id"`
-	Category string           `json:"category"` // avatar, frame, badge, card_back, table, emote
+	Category string           `json:"category"` // avatar, frame, badge, card_back, table, emote, effect
 	Name     string           `json:"name"`
 	Price    map[string]int64 `json:"price"` // {"coins":5000} or {"diamonds":50}
 	Rarity   string           `json:"rarity,omitempty"`

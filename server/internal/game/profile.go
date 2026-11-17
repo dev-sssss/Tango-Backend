@@ -15,6 +15,7 @@ type Profile struct {
 	Badge     string `json:"badge"`
 	CardBack  string `json:"card_back"`
 	TableSkin string `json:"table"`
+	Effect    string `json:"effect"`
 	Trophies  int    `json:"trophies"`
 	Wins      int    `json:"wins"`
 	Losses    int    `json:"losses"`
@@ -28,14 +29,17 @@ const (
 	ProfileKey        = "main"
 )
 
-// Default cosmetics every player owns.
+// Default cosmetics every player owns (the same free items as the Unity
+// game's shop: Nova, the gold ring, the plain plate, the compass back, the
+// sunset table and the classic card effects).
 var DefaultLoadout = map[string]string{
-	"avatar": "avatar_01", "frame": "frame_basic", "badge": "badge_basic", "card_back": "back_classic", "table": "table_classic",
+	"avatar": "avatar_nova", "frame": "frame_gold", "badge": "badge_none", "card_back": "back_default", "table": "table_sunset",
+	"effect": "effect_classic",
 }
 
 func (p *Profile) toMap() map[string]any {
 	return map[string]any{"name": p.Name, "avatar": p.Avatar, "frame": p.Frame, "badge": p.Badge, "card_back": p.CardBack,
-		"table": p.TableSkin, "trophies": p.Trophies, "wins": p.Wins, "losses": p.Losses, "games": p.Games,
+		"table": p.TableSkin, "effect": p.Effect, "trophies": p.Trophies, "wins": p.Wins, "losses": p.Losses, "games": p.Games,
 		"created_ms": p.CreatedMs, "tutorial_done": p.Tutorial}
 }
 
@@ -59,7 +63,7 @@ func ProfileFromMap(m map[string]any) *Profile {
 	return &Profile{
 		Name: strOf(m["name"], ""), Avatar: strOf(m["avatar"], DefaultLoadout["avatar"]), Frame: strOf(m["frame"], DefaultLoadout["frame"]),
 		Badge: strOf(m["badge"], DefaultLoadout["badge"]), CardBack: strOf(m["card_back"], DefaultLoadout["card_back"]),
-		TableSkin: strOf(m["table"], DefaultLoadout["table"]), Trophies: intOf(m["trophies"]), Wins: intOf(m["wins"]),
+		TableSkin: strOf(m["table"], DefaultLoadout["table"]), Effect: strOf(m["effect"], DefaultLoadout["effect"]), Trophies: intOf(m["trophies"]), Wins: intOf(m["wins"]),
 		Losses: intOf(m["losses"]), Games: intOf(m["games"]), CreatedMs: int64(intOf(m["created_ms"])), Tutorial: m["tutorial_done"] == true,
 	}
 }
