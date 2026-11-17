@@ -12,5 +12,7 @@ tango_dir: /opt/tango-server
 # Tango's certificate is issued and renewed through it; the nginx config is
 # not changed.
 tango_acme_webroot: /opt/ludo-acme
+# The Unity game's Android package (Play purchases and Google sign-in).
+tango_android_package: com.robingames.unoafterdark
 # Dev shortcut RPC (+10,000 coins); never enabled in production.
 tango_allow_cheats: true

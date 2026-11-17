@@ -101,6 +101,7 @@ func (srv *Server) clientMux() http.Handler {
 	mux.HandleFunc("POST /v2/account/authenticate/email", srv.v1(srv.handleAuthEmail))
 	mux.HandleFunc("POST /v2/account/authenticate/google", srv.v1(srv.handleAuthGoogle))
 	mux.HandleFunc("POST /v2/account/session/refresh", srv.v1(srv.handleSessionRefresh))
+	mux.HandleFunc("POST /v2/account/link/google", srv.v1(srv.handleLinkGoogle))
 	mux.HandleFunc("POST /v2/session/logout", srv.v1(srv.handleLogout))
 	mux.HandleFunc("GET /v2/account", srv.v1(srv.handleGetAccount))
 	mux.HandleFunc("PUT /v2/account", srv.v1(srv.handleUpdateAccount))
@@ -233,6 +234,41 @@ func (srv *Server) handleAuthGoogle(w http.ResponseWriter, r *http.Request) {
 	}
 	srv.trackSignin(r, "google", uid, created)
 	srv.issueSession(w, uid, uname, in.Vars, created)
+}
+
+// handleLinkGoogle adds a Google sign-in to the signed-in account (Nakama's
+// LinkGoogle). 409 AlreadyExists: that Google account is another player's,
+// so the app signs in to it instead.
+func (srv *Server) handleLinkGoogle(w http.ResponseWriter, r *http.Request) {
+	c, err := srv.sessionFromRequest(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	b, err := srv.readBodyLimit(w, r, srv.cfg.Socket.MaxRequestSizeBytes)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var in api.AccountGoogle
+	if err := jsonUnmarshal.Unmarshal(b, &in); err != nil || in.Token == "" {
+		writeNakamaError(w, CodeInvalidArgument, "Google token is required.")
+		return
+	}
+	if !srv.guard.LimitAuth(w, r, "", false) {
+		return
+	}
+	profile, err := srv.google.Verify(r.Context(), in.Token)
+	if err != nil {
+		writeNakamaError(w, CodeUnauthenticated, "Could not authenticate Google profile.")
+		return
+	}
+	if err := LinkGoogle(r.Context(), srv.db, c.UserID, profile); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte("{}"))
 }
 
 func (srv *Server) handleSessionRefresh(w http.ResponseWriter, r *http.Request) {

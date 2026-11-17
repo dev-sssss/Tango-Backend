@@ -112,7 +112,7 @@ jobs:
         id: target
         run: |
           t=$(jq -c '.["${{ inputs.environment }}"]' config/aws-targets.json)
-          for k in account_id region deploy_role_arn public_host; do echo "$k=$(echo "$t" | jq -r .$k)" >> "$GITHUB_OUTPUT"; done
+          for k in account_id region deploy_role_arn public_host google_client_ids; do echo "$k=$(echo "$t" | jq -r .$k)" >> "$GITHUB_OUTPUT"; done
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.target.outputs.deploy_role_arn }}
@@ -142,6 +142,7 @@ jobs:
           TANGO_ARTIFACT_DIR: ${{ github.workspace }}/artifact
           TANGO_PUBLIC_HOST: ${{ vars.TANGO_DOMAIN || steps.target.outputs.public_host || steps.check.outputs.public_ip }}
           TANGO_PUBLIC_IP: ${{ steps.check.outputs.public_ip }}
+          TANGO_GOOGLE_CLIENT_IDS: ${{ steps.target.outputs.google_client_ids }}
           TANGO_RESULT_FILE: ${{ runner.temp }}/tango-deploy-result.json
         run: ansible-playbook -i "inventories/${{ inputs.environment }}/hosts.yml" playbooks/deploy_tango.yml
       - name: Smoke test from the internet

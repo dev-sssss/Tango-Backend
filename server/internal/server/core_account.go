@@ -245,6 +245,44 @@ func AuthenticateGoogle(ctx context.Context, db *pgxpool.Pool, profile *GooglePr
 	return newID, username, true, nil
 }
 
+// LinkGoogle attaches a verified Google profile to an existing account (a
+// guest who signs in with Google keeps their progress). It fails with
+// AlreadyExists when that Google account belongs to another player.
+func LinkGoogle(ctx context.Context, db *pgxpool.Pool, userID string, profile *GoogleProfile) error {
+	var owner string
+	err := db.QueryRow(ctx, `SELECT id::text FROM users WHERE google_id = $1`, profile.Sub).Scan(&owner)
+	if err == nil {
+		if owner == userID {
+			return nil
+		}
+		return statusErr(CodeAlreadyExists, "Google ID is already in use.")
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return &StatusError{Code: CodeInternal, Message: "Error linking Google ID.", Cause: err}
+	}
+	displayName, avatar := profile.Name, profile.Picture
+	if len(displayName) > 255 {
+		displayName = ""
+	}
+	if len(avatar) > 512 {
+		avatar = ""
+	}
+	tag, err := db.Exec(ctx, `UPDATE users SET google_id = $2,
+		display_name = COALESCE(NULLIF(display_name, ''), NULLIF($3, '')),
+		avatar_url = COALESCE(NULLIF(avatar_url, ''), NULLIF($4, '')), update_time = now()
+		WHERE id = $1 AND disable_time <= '1970-01-01 00:00:00+00'`, userID, profile.Sub, displayName, avatar)
+	if err != nil {
+		if isPgCode(err, pgUniqueViolation) {
+			return statusErr(CodeAlreadyExists, "Google ID is already in use.")
+		}
+		return &StatusError{Code: CodeInternal, Message: "Error linking Google ID.", Cause: err}
+	}
+	if tag.RowsAffected() == 0 {
+		return errUserNotFound
+	}
+	return nil
+}
+
 func GetAccount(ctx context.Context, db dbtx, userID string) (*Account, error) {
 	if _, err := uuid.FromString(userID); err != nil {
 		return nil, statusErr(CodeInvalidArgument, "Invalid user ID.")

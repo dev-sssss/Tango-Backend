@@ -29,7 +29,17 @@ await socket.ConnectAsync(session, appearOnline: true);
 socket.ReceivedMatchState += OnMatchState;   // all game messages arrive here
 ```
 
-Google sign-in: `client.AuthenticateGoogleAsync(idToken)`.
+Google sign-in (an ID token from Credential Manager, issued to the game's OAuth
+Web client ID):
+
+* `POST /v2/account/link/google` `{"token": idToken}` (Bearer session): adds
+  Google to the signed-in guest account, so its coins and items are kept.
+  `409 AlreadyExists` means that Google account is another player's: then
+* `POST /v2/account/authenticate/google?create=true` `{"token": idToken}`
+  (Basic server key) opens that account instead (a new phone, a reinstall).
+
+The server accepts tokens only for the client IDs in
+`config/aws-targets.json` → `google_client_ids` (passed to the node config).
 
 ## RPCs
 

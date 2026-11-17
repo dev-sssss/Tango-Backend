@@ -26,6 +26,8 @@
 #   TANGO_HTTP_PORT  force the public HTTP port (first deploy only)
 #   TANGO_KEEP       releases to keep (default 5)
 #   ALLOW_CHEATS     true | false (dev shortcut RPC; always off in production)
+#   TANGO_GOOGLE_CLIENT_IDS  comma-separated OAuth client IDs whose Google ID
+#                    tokens are accepted for sign-in (the game's Web client ID)
 #
 # HTTPS (TANGO_TLS=auto, TANGO_HOST is a domain or IP):
 #   - ports 80/443 free: Tango's own nginx + certbot container (HTTP-01 on 80).
@@ -205,6 +207,11 @@ cluster:
   presence_grace_ms: 10000
 metrics: { prometheus_port: 9100 }
 EOF
+if [ -n "${TANGO_GOOGLE_CLIENT_IDS:-}" ]; then
+  # Google sign-in: only ID tokens issued to the game's own OAuth client(s).
+  { echo "social:"; echo "  google:"; echo "    client_ids:"
+    echo "$TANGO_GOOGLE_CLIENT_IDS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep . | sed 's/.*/      - "&"/'; } >> "$tmp"
+fi
 cfg_changed=0
 if ! cmp -s "$tmp" "$node_cfg" 2>/dev/null; then cfg_changed=1; fi
 install -m 0640 -o root -g 65532 "$tmp" "$node_cfg"   # readable by the container user only

@@ -95,6 +95,8 @@
         TANGO_TLS: "{{ tls_mode }}"
         TANGO_PUBLIC_IP: "{{ public_ip }}"
         TANGO_ACME_WEBROOT: "{{ tango_acme_webroot | default('') }}"
+        TANGO_GOOGLE_CLIENT_IDS: "{{ lookup('env', 'TANGO_GOOGLE_CLIENT_IDS') }}"
+        TANGO_ANDROID_PACKAGE: "{{ tango_android_package | default('') }}"
         ALLOW_CHEATS: "{{ 'true' if (tango_allow_cheats | bool) and environment_name != 'production' else 'false' }}"
         PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
       register: deploy
