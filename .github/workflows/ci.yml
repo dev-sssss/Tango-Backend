@@ -153,7 +153,15 @@ jobs:
         run: sudo TANGO_DIR="$TANGO_DIR" "$TANGO_DIR/bin/backup.sh" && sudo ls -l "$TANGO_DIR/backups"
       - name: Logs on failure
         if: failure()
-        run: sudo docker compose --project-directory "$TANGO_DIR" logs --tail 100 || true
+        run: |
+          sudo docker compose --project-directory "$TANGO_DIR" logs --tail 100 || true
+          sudo grep -E '^(HTTP_PORT|HTTPS_PORT)=' "$TANGO_DIR/.env" || true
+          sudo grep -nE 'listen|ssl_' "$TANGO_DIR/nginx/nginx.conf" || true
+          sudo ls -la "$TANGO_DIR/certs" || true
+          docker ps --format '{{.Names}} {{.Ports}}' || true
+          sudo docker compose --project-directory "$TANGO_DIR" exec -T nginx nginx -t || true
+          sudo docker compose --project-directory "$TANGO_DIR" exec -T nginx ls -la /etc/tango-certs || true
+          curl -vk --max-time 5 https://127.0.0.1:8443/healthcheck || true
 
   image:
     name: Multi-arch image build (not pushed)
