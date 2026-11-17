@@ -126,19 +126,36 @@ jobs:
           if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing"; exit 1; fi
       - name: SSH key
         run: |
+          host=$(printf '%s' "$EC2_HOST" | tr -d '[:space:]')
+          user=$(printf '%s' "$EC2_USER" | tr -d '[:space:]')
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.pem
+          printf '%s\n' "$EC2_SSH_KEY" | tr -d '\r' > ~/.ssh/ec2.pem
           chmod 600 ~/.ssh/ec2.pem
-          ssh-keyscan -T 15 -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           cat > ~/.ssh/config <<EOF
           Host ec2
-            HostName $EC2_HOST
-            User $EC2_USER
+            HostName $host
+            User $user
             IdentityFile ~/.ssh/ec2.pem
             ServerAliveInterval 30
             ConnectTimeout 20
           EOF
-          ssh ec2 'echo "connected to $(hostname) ($(uname -m))"'
+          if ! ssh-keygen -y -f ~/.ssh/ec2.pem >/dev/null 2>&1; then
+            echo "::error::EC2_SSH_KEY is not a valid private key. Paste the whole .pem file, including the BEGIN and END lines."
+            exit 1
+          fi
+          if ! timeout 15 bash -c "</dev/tcp/$host/22" 2>/dev/null; then
+            echo "::error::GitHub cannot reach port 22 (SSH) on $host. In the EC2 security group, allow inbound SSH (port 22) from 0.0.0.0/0 (GitHub's servers use changing IPs), and check that EC2_HOST is only the Elastic IP."
+            exit 1
+          fi
+          ssh-keyscan -T 15 -H "$host" >> ~/.ssh/known_hosts
+          if ! ssh -o BatchMode=yes ec2 'echo "connected to $(hostname) ($(uname -m)) as $(whoami)"'; then
+            echo "::error::SSH login refused. Check EC2_USER (usually ubuntu on Ubuntu, ec2-user on Amazon Linux) and that EC2_SSH_KEY is the key of this instance."
+            exit 1
+          fi
+          if ! ssh ec2 'sudo -n true' 2>/dev/null; then
+            echo "::error::User $user cannot use sudo without a password on the server."
+            exit 1
+          fi
       - name: Find or create the Tango folder on the server
         id: dir
         env:
@@ -175,7 +192,8 @@ jobs:
           ssh ec2 "sudo TANGO_IMAGE='${{ needs.image.outputs.image }}' TANGO_HOST='${TANGO_HOST}' TANGO_DIR='${TANGO_DIR}' TANGO_DOCKER_CONFIG=/tmp/tango-docker-cfg bash /tmp/tango-deploy/scripts/deploy.sh"
       - name: Remove the temporary registry login
         if: always()
-        run: ssh ec2 'sudo rm -rf /tmp/tango-docker-cfg /tmp/tango-deploy' || true
+        run: |
+          [ -f ~/.ssh/config ] && ssh -o BatchMode=yes ec2 'sudo rm -rf /tmp/tango-docker-cfg /tmp/tango-deploy' 2>/dev/null || true
       - name: Smoke test from outside
         env:
           TANGO_DIR: ${{ steps.dir.outputs.path }}
