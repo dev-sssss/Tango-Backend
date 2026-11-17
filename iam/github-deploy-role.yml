@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Per-repository OIDC role for environment-scoped SSM deployment
+Parameters:
+  Repository:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
+  OwnerId:
+    Type: String
+    AllowedPattern: '[0-9]+'
+  RepositoryId:
+    Type: String
+    AllowedPattern: '[0-9]+'
+  Environment:
+    Type: String
+    AllowedValues: [nonprod, production]
+  OIDCProviderArn:
+    Type: String
+    Description: Existing token.actions.githubusercontent.com provider in THIS account
+  InstanceId:
+    Type: String
+    AllowedPattern: 'i-[a-f0-9]+'
+  TransferBucket:
+    Type: String
+  Purpose:
+    Type: String
+    AllowedValues: [infrastructure, assets]
+  BackendArtifactBucket:
+    Type: String
+    Default: ''
+    Description: Infrastructure role only - bucket holding backend-releases/<sha>/ (read-only)
+Conditions:
+  Infrastructure: !Equals [!Ref Purpose, infrastructure]
+  ReadBackendArtifacts: !And
+    - !Equals [!Ref Purpose, infrastructure]
+    - !Not [!Equals [!Ref BackendArtifactBucket, '']]
+Resources:
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref OIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub
+                  - 'repo:${Owner}@${OwnerId}/${Repo}@${RepositoryId}:environment:${Environment}'
+                  - Owner: !Select [0, !Split ['/', !Ref Repository]]
+                    Repo: !Select [1, !Split ['/', !Ref Repository]]
+      Policies:
+        - PolicyName: EnvironmentDeploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: !If [Infrastructure, [s3:GetObject, s3:PutObject, s3:DeleteObject], [s3:GetObject, s3:PutObject]]
+                Resource: !Sub 'arn:aws:s3:::${TransferBucket}/*'
+              - Effect: Allow
+                Action: [s3:ListBucket, s3:GetBucketLocation]
+                Resource: !Sub 'arn:aws:s3:::${TransferBucket}'
+              - Effect: Allow
+                Action: !If [Infrastructure, [ssm:StartSession], [ssm:SendCommand]]
+                Resource:
+                  - !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${InstanceId}'
+                  - !If
+                    - Infrastructure
+                    - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/SSM-SessionManagerRunShell'
+                    - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/LudoPublishAssets-${Environment}'
+              - Effect: Allow
+                Action: [ssm:GetCommandInvocation, ssm:DescribeInstanceInformation, ec2:DescribeInstances]
+                Resource: '*'
+              - !If
+                - Infrastructure
+                - Effect: Allow
+                  Action: [ssm:TerminateSession, ssm:ResumeSession]
+                  Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:session/*'
+                - !Ref AWS::NoValue
+              - !If
+                - Infrastructure
+                - Effect: Allow
+                  Action: ssmmessages:OpenDataChannel
+                  Resource: '*'
+                - !Ref AWS::NoValue
+              - !If
+                - ReadBackendArtifacts
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub 'arn:aws:s3:::${BackendArtifactBucket}/backend-releases/*'
+                - !Ref AWS::NoValue
+Outputs:
+  RoleArn:
+    Value: !GetAtt DeployRole.Arn

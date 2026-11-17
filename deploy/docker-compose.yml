@@ -1,5 +1,7 @@
 # Tango Cards server stack. Copied into the deploy folder by scripts/deploy.sh,
-# which also writes .env (image, ports, generated secrets) and the configs.
+# which also writes .env (release, ports, generated secrets) and the configs.
+# The server is a static Go binary (releases/<sha>/tango-server) run on a
+# minimal distroless image as a non-root user, like the Ludo Go nodes.
 # It is its own Compose project ("tango-backend") with its own network and
 # volume, so other Compose stacks on the same server are not touched.
 #
@@ -12,17 +14,24 @@
 name: tango-backend
 
 x-node: &node
-  image: ${TANGO_IMAGE:?TANGO_IMAGE must be set in .env}
-  restart: unless-stopped
+  image: gcr.io/distroless/static-debian12:nonroot
+  restart: always
+  user: "65532:65532"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
   stop_grace_period: 45s
   depends_on:
     postgres:
       condition: service_healthy
   volumes:
+    - ${TANGO_RELEASE_DIR:?TANGO_RELEASE_DIR must be set in .env}:/app:ro
     - ./config/node.yml:/etc/tango/node.yml:ro
   networks: [tango]
   ulimits:
     nofile: { soft: 65536, hard: 65536 }
+  mem_limit: 768m
+  pids_limit: 512
   logging:
     driver: json-file
     options: { max-size: "20m", max-file: "5" }
@@ -52,18 +61,18 @@ services:
   migrate:
     <<: *node
     restart: "no"
-    command: ["migrate", "up", "--config", "/etc/tango/node.yml"]
+    command: ["/app/tango-server", "migrate", "up", "--config", "/etc/tango/node.yml"]
     profiles: ["tools"]
 
   tango-node1:
     <<: *node
-    command: ["--config", "/etc/tango/node.yml", "--name", "node1", "--cluster.advertise_address", "tango-node1:7352"]
+    command: ["/app/tango-server", "--config", "/etc/tango/node.yml", "--name", "node1", "--cluster.advertise_address", "tango-node1:7352"]
     ports:
       - "127.0.0.1:17361:7351" # admin/health, local only
 
   tango-node2:
     <<: *node
-    command: ["--config", "/etc/tango/node.yml", "--name", "node2", "--cluster.advertise_address", "tango-node2:7352"]
+    command: ["/app/tango-server", "--config", "/etc/tango/node.yml", "--name", "node2", "--cluster.advertise_address", "tango-node2:7352"]
     ports:
       - "127.0.0.1:17362:7351"
 

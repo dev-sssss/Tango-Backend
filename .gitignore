@@ -8,3 +8,5 @@ server/tango-server
 Thumbs.db
 .vscode/
 .idea/
+__pycache__/
+*.pyc

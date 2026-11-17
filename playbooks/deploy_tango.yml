@@ -1,0 +1,112 @@
+# Deploy the Tango Cards backend on a single host over AWS SSM.
+#
+#   TANGO_RELEASE=<git sha> TANGO_ARTIFACT_DIR=<dir with tango-server-linux-amd64/arm64> \
+#   TANGO_PUBLIC_HOST=<elastic ip or domain> SSM_TRANSFER_BUCKET=<bucket> \
+#     ansible-playbook -i inventories/nonprod/hosts.yml playbooks/deploy_tango.yml
+#
+# What it does on the host (all under tango_dir, default /opt/tango-server):
+#   1. copies the static server binary to releases/<sha>/tango-server
+#   2. copies deploy/ (docker-compose.yml and scripts) to deploy-files/
+#   3. runs deploy-files/scripts/deploy.sh, which writes .env and configs,
+#      starts Postgres, migrates, rolls tango-node1 then tango-node2 (their
+#      matches move live to the other node), and starts nginx
+#   4. brings the connection details back to the runner for the smoke test
+#
+# The Tango stack is its own Compose project with its own network, volume
+# and ports, so the Ludo stack, mail and everything else on the host are not
+# touched. Secrets are generated on the host on the first deploy and stay
+# there (.env, root-only).
+
+- name: Deploy the Tango Cards backend
+  hosts: game_servers
+  gather_facts: true
+  gather_subset: [min]
+  vars:
+    release: "{{ lookup('env', 'TANGO_RELEASE') }}"
+    artifact_dir: "{{ lookup('env', 'TANGO_ARTIFACT_DIR') }}"
+    public_host: "{{ lookup('env', 'TANGO_PUBLIC_HOST') }}"
+    result_file: "{{ lookup('env', 'TANGO_RESULT_FILE') | default('/tmp/tango-deploy-result.json', true) }}"
+  tasks:
+    - name: Require a release, the binaries and the public host
+      ansible.builtin.assert:
+        that:
+          - release is match('^[A-Za-z0-9._-]{4,64}$')
+          - artifact_dir | length > 0
+          - public_host | length > 0
+        fail_msg: Set TANGO_RELEASE, TANGO_ARTIFACT_DIR and TANGO_PUBLIC_HOST.
+        quiet: true
+
+    - name: Pick the binary for this host's CPU
+      ansible.builtin.set_fact:
+        tango_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+    - name: Directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - "{{ tango_dir }}"
+        - "{{ tango_dir }}/releases"
+        - "{{ tango_dir }}/releases/{{ release }}"
+        - "{{ tango_dir }}/deploy-files"
+        - "{{ tango_dir }}/deploy-files/scripts"
+
+    - name: Copy the server binary ({{ tango_arch }})
+      ansible.builtin.copy:
+        src: "{{ artifact_dir }}/tango-server-linux-{{ tango_arch }}"
+        dest: "{{ tango_dir }}/releases/{{ release }}/tango-server"
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy the Compose file and deploy scripts
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ tango_dir }}/deploy-files/{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: ../deploy/docker-compose.yml, dest: docker-compose.yml, mode: '0644'}
+        - {src: ../deploy/scripts/deploy.sh, dest: scripts/deploy.sh, mode: '0755'}
+        - {src: ../deploy/scripts/install-docker.sh, dest: scripts/install-docker.sh, mode: '0755'}
+        - {src: ../deploy/scripts/backup.sh, dest: scripts/backup.sh, mode: '0755'}
+      loop_control: {label: "{{ item.dest }}"}
+
+    - name: Deploy (Compose stack, rolling node restart)
+      ansible.builtin.command:
+        argv: [bash, "{{ tango_dir }}/deploy-files/scripts/deploy.sh"]
+      environment:
+        TANGO_RELEASE: "{{ release }}"
+        TANGO_HOST: "{{ public_host }}"
+        TANGO_DIR: "{{ tango_dir }}"
+        TANGO_ENV: "{{ environment_name }}"
+        ALLOW_CHEATS: "{{ 'true' if (tango_allow_cheats | bool) and environment_name != 'production' else 'false' }}"
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+      register: deploy
+      changed_when: true
+
+    - name: Deploy output
+      ansible.builtin.debug:
+        msg: "{{ deploy.stdout_lines | select('match', '^(==>|  [A-Z]|Ports|An existing|WARNING)') | reject('match', '.*Server key.*') | list }}"
+
+    - name: Read the connection details
+      ansible.builtin.slurp:
+        src: "{{ tango_dir }}/connection.txt"
+      register: connection
+      no_log: true
+
+    - name: Hand them to the runner for the smoke test
+      ansible.builtin.copy:
+        content: >-
+          {{ {'base': (connection.content | b64decode | regex_search('Base\s*:\s*(\S+)', '\1') | first),
+              'server_key': (connection.content | b64decode | regex_search('Server key\s*:\s*(\S+)', '\1') | first),
+              'release': release, 'arch': tango_arch, 'dir': tango_dir} | to_json }}
+        dest: "{{ result_file }}"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+      no_log: true

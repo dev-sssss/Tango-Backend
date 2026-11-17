@@ -14,76 +14,74 @@ Cards game.
 | Path | What it is |
 |---|---|
 | `server/` | Go server. `internal/game/tango` = rules engine, match handler, bots, payouts. `internal/game/rpc` = every RPC the app calls. `internal/server` = engine (API, sockets, cluster, wallet, friends). `e2e/` = tests that run real server processes. |
-| `deploy/` | `docker-compose.yml` (Postgres, two game nodes, nginx, certbot) and `scripts/deploy.sh`, which installs or updates the stack on a server. |
-| `.github/workflows/` | `Deploy to EC2` (one button) and `CI`. |
+| `playbooks/deploy_tango.yml` | Ansible playbook: copies the binary and deploy files to the server over AWS SSM and runs the deploy. |
+| `inventories/nonprod/` | The nonprod EC2, reached with `amazon.aws.aws_ssm` (no SSH). |
+| `config/aws-targets.json` | Reviewed target: account, region, instance, SSM transfer bucket, deploy role. |
+| `deploy/` | `docker-compose.yml` (Postgres, two game nodes, nginx, certbot) and `scripts/deploy.sh`, which the playbook runs on the server. |
+| `iam/create-deploy-role.sh` | One-time: creates the GitHub OIDC deploy role for this repository. |
+| `.github/workflows/` | `Deploy Tango backend (SSM)` (one button) and `CI`. |
 | `docs/CLIENT_PROTOCOL.md` | How the Unity app talks to the server: RPCs, opcodes, state. |
 
-## Deploy to your EC2 instance
+## Deploy (same model as `dev-sssss/ludo_nakama-ansible`)
 
-**Once:** add three repository secrets (Settings → Secrets and variables →
-Actions):
+- GitHub signs in to AWS with a short-lived **OIDC role**: no AWS keys, no
+  SSH keys, no open SSH port.
+- **Ansible reaches the EC2 through AWS Systems Manager** Session Manager
+  (`amazon.aws.aws_ssm`); files travel through the existing SSM transfer
+  bucket `ludo-nonprod-ssm-521503820723-ap-south-1`.
+- The server is a **static Go binary** (built for amd64 and arm64) on a
+  distroless image, rolled onto two Compose nodes one at a time.
 
-| Secret | Value |
-|---|---|
-| `EC2_HOST` | the instance's Elastic IP |
-| `EC2_USER` | SSH user: `ubuntu` (Ubuntu) or `ec2-user` (Amazon Linux) |
-| `EC2_SSH_KEY` | the full contents of the instance's `.pem` private key |
+### One-time setup
 
-Optional repository variables: `EC2_DEPLOY_PATH` (your Tango folder on the
-server; if not set, the workflow uses the one folder named like `*tango*` in
-`/root`, the SSH user's home, `/opt` or `/srv`, or creates
-`/root/tango-backend`) and `TANGO_DOMAIN`.
+1. Create the deploy role: open **AWS CloudShell** in the nonprod account
+   (521503820723, ap-south-1), upload or paste `iam/create-deploy-role.sh`,
+   and run `bash create-deploy-role.sh`. It creates
+   `tango-nonprod-infrastructure`, which only this repository's `nonprod`
+   GitHub environment can use, limited to SSM sessions on
+   `i-060485c20a979c038` and the transfer bucket.
+2. EC2 security group: allow inbound **8350** (the Tango port; 80, 443 and
+   7350 already belong to the Ludo stack and mail). SSH (22) is not needed.
 
-Security group: inbound **22** (SSH from GitHub Actions) and either **80 +
-443** (when nothing else on the server uses them: HTTPS) or **8350** (used
-automatically when 80/443 already belong to another stack: plain HTTP).
+### Every deploy
 
-**Every deploy:** Actions → **Deploy to EC2** → **Run workflow**. It tests the
-server, builds the image (amd64 + arm64) into GitHub Container Registry,
-connects over SSH, and runs `deploy.sh` in your Tango folder, then checks the
-server from outside. The run summary shows the host, port and server key for
-the Unity client.
+Actions → **Deploy Tango backend (SSM)** → **Run workflow**. It tests,
+builds, verifies the AWS account/instance/SSM status, runs the playbook over
+SSM and checks the server from the internet. The summary shows host and port.
 
-What `deploy.sh` does in the Tango folder:
+What happens on the server (`/opt/tango-server`):
 
-1. installs Docker and the Compose plugin only if missing
-2. writes `docker-compose.yml` and `.env` (new image tag, ports, and secrets
-   generated once: database password, session keys, HTTP key, cluster
-   secret, client server key; they never leave the server)
-3. starts Postgres, runs the database migration, then starts or replaces
-   `tango-node1` and `tango-node2` one at a time (live matches move to the
-   other node), then nginx
-4. with ports 80/443: gets a Let's Encrypt certificate for the Elastic IP
-   (6-day certificate, renewed automatically) or for `TANGO_DOMAIN`
-5. installs timers for certificate renewal and a nightly database backup
-   (`backups/`, newest 7 kept)
-6. writes the connection details to `connection.txt`
+1. `releases/<sha>/tango-server`: the new binary (the last 5 releases are kept)
+2. `docker-compose.yml` + `.env`: release path, ports, and secrets generated
+   once on the first deploy (database password, session keys, HTTP key,
+   cluster secret, client server key); they never leave the server
+3. Postgres starts, the database is migrated, `tango-node1` then
+   `tango-node2` are replaced one at a time (live matches move to the other
+   node), then nginx
+4. Ports: 80/443 with HTTPS if free, otherwise **8350** (HTTP); on the
+   nonprod EC2 that is 8350
+5. Timers for certificate renewal and a nightly database backup (`backups/`)
+6. Connection details in `connection.txt` (including the server key for the
+   Unity client): `sudo cat /opt/tango-server/connection.txt`
 
-It lives next to other Compose stacks without touching them: its own project
-name (`tango-backend`), network and volume; only free ports; only old Tango
-images are removed; the registry login for the deploy is kept in a temporary
-docker config, so the server's own `docker login` is unchanged.
-
-Manual deploy on the instance (no GitHub): copy `deploy/` there and run
-`sudo TANGO_IMAGE=<image> TANGO_HOST=<elastic-ip> deploy/scripts/deploy.sh`.
-
-Useful on the instance:
+It is its own Compose project (`tango-backend`) with its own network, volume
+and ports. The Ludo stack, Mailu and everything else on the host are not
+touched.
 
 ```
-cd <your tango folder>
+cd /opt/tango-server
 sudo docker compose ps                  # what is running
 sudo docker compose logs -f tango-node1 # server logs
-sudo cat connection.txt                 # host, port, server key
 ```
 
 ```
-Unity app ──HTTPS/WSS──▶ nginx :443 (TLS, rate limits, WebSocket)
-                           │ least_conn
-                ┌──────────┴──────────┐
-           tango-node1           tango-node2     (Go; API + sockets + matches)
-                └── cluster bus ──────┘
-                           │
-                    PostgreSQL 16  ──nightly──▶ backups/
+Unity app ──HTTP(S)/WS──▶ nginx :8350 (rate limits, WebSocket)
+                            │ least_conn
+                 ┌──────────┴──────────┐
+            tango-node1           tango-node2     (Go binary on distroless)
+                 └── cluster bus ──────┘
+                            │
+                     PostgreSQL 16  ──nightly──▶ backups/
 ```
 
 ## Game rules implemented on the server
@@ -116,5 +114,4 @@ TANGO_TEST_DB=postgres://user:pass@localhost:5432/tango_e2e go test ./...   # + 
 
 Admin RPCs (`tango.admin.grant`, `tango.admin.set_app_config`,
 `tango.admin.set_shop_catalog`, `tango.admin.force_finish_match`,
-`tango.admin.delete_account`) need `HTTP_KEY` from `.env` in the Tango
-folder: `POST /v2/rpc/<id>?unwrap=true&http_key=<key>`.
+`tango.admin.delete_account`) need `HTTP_KEY` from `/opt/tango-server/.env`: `POST /v2/rpc/<id>?unwrap=true&http_key=<key>`.

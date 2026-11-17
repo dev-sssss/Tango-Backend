@@ -6,33 +6,32 @@
 #
 # It lives side by side with other Docker Compose stacks on the server: its
 # own project name, network and volume; it only publishes ports that are
-# free; it never prunes other images and never changes the server's own
-# docker login.
+# free; it never prunes other projects' images or containers.
 #
-# Usage (as root or with sudo), from the unpacked deploy folder:
-#   TANGO_IMAGE=ghcr.io/dev-sssss/tango-backend:<tag> TANGO_HOST=<elastic-ip or domain> \
-#   TANGO_DIR=/home/ubuntu/tango-backend scripts/deploy.sh
+# The server binary must already be at $TANGO_DIR/releases/$TANGO_RELEASE/tango-server
+# (the Ansible playbook copies it there over SSM).
+#
+# Usage (as root):
+#   TANGO_RELEASE=<sha> TANGO_HOST=<elastic-ip or domain> TANGO_DIR=/opt/tango-server scripts/deploy.sh
 #
 # Settings (environment):
-#   TANGO_IMAGE          server image to run (required)
-#   TANGO_HOST           public IP or domain clients use (required)
-#   TANGO_DIR            deploy folder on this server (default /opt/tango)
-#   TANGO_ENV            nonprod | production (default nonprod)
-#   TANGO_TLS            auto | off (auto = Let's Encrypt certificate when ports 80/443 are ours)
-#   TANGO_HTTP_PORT      force the public HTTP port (first deploy only)
-#   TANGO_PULL           1 | 0 (0 = image already on this machine, e.g. CI)
-#   TANGO_DOCKER_CONFIG  docker config dir holding the registry login for this deploy
-#   ALLOW_CHEATS         true | false (dev shortcut RPC; always off in production)
+#   TANGO_RELEASE    release folder name under $TANGO_DIR/releases (required)
+#   TANGO_HOST       public IP or domain clients use (required)
+#   TANGO_DIR        deploy folder on this server (default /opt/tango-server)
+#   TANGO_ENV        nonprod | production (default nonprod)
+#   TANGO_TLS        auto | off (auto = Let's Encrypt certificate when ports 80/443 are ours)
+#   TANGO_HTTP_PORT  force the public HTTP port (first deploy only)
+#   TANGO_KEEP       releases to keep (default 5)
+#   ALLOW_CHEATS     true | false (dev shortcut RPC; always off in production)
 set -euo pipefail
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
-DIR=${TANGO_DIR:-/opt/tango}
+DIR=${TANGO_DIR:-/opt/tango-server}
 ENVNAME=${TANGO_ENV:-nonprod}
 TLS=${TANGO_TLS:-auto}
-PULL=${TANGO_PULL:-1}
 CHEATS=${ALLOW_CHEATS:-true}
-: "${TANGO_IMAGE:?TANGO_IMAGE is required}"
+: "${TANGO_RELEASE:?TANGO_RELEASE is required}"
 : "${TANGO_HOST:?TANGO_HOST is required (public IP or domain)}"
 [ "$ENVNAME" = production ] && CHEATS=false
 
@@ -43,6 +42,18 @@ is_ip() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 
 log "Docker"
 bash "$SRC/scripts/install-docker.sh"
+
+RELEASE_DIR="$DIR/releases/$TANGO_RELEASE"
+[ -x "$RELEASE_DIR/tango-server" ] || { echo "ERROR: $RELEASE_DIR/tango-server not found" >&2; exit 1; }
+
+log "Disk space"
+free_mb=$(df -Pm /var/lib/docker 2>/dev/null | awk 'NR==2{print $4}')
+[ -n "$free_mb" ] || free_mb=$(df -Pm / | awk 'NR==2{print $4}')
+echo "${free_mb} MB free"
+if [ "$free_mb" -lt 800 ]; then
+  echo "ERROR: less than 800 MB free on the Docker disk; free some space first (nothing was changed)." >&2
+  exit 1
+fi
 
 log "Files in $DIR"
 mkdir -p "$DIR"/{config,nginx,certbot/www,certbot/conf,backups,bin}
@@ -69,7 +80,7 @@ REFRESH_KEY=$(rnd 48)
 HTTP_KEY=$(rnd 40)
 CLUSTER_SECRET=$(rnd 48)
 SERVER_KEY=tango-$(rnd 24)
-TANGO_IMAGE=
+TANGO_RELEASE_DIR=
 TANGO_HOST=
 EOF
   umask 022
@@ -78,7 +89,9 @@ chmod 600 "$envfile"
 set_env() {
   if grep -q "^$1=" "$envfile"; then sed -i "s|^$1=.*|$1=$2|" "$envfile"; else echo "$1=$2" >> "$envfile"; fi
 }
-set_env TANGO_IMAGE "$TANGO_IMAGE"
+# shellcheck disable=SC2153 # TANGO_RELEASE comes from the caller
+set_env TANGO_RELEASE_DIR "$RELEASE_DIR"
+sed -i '/^TANGO_IMAGE=/d' "$envfile"
 set_env TANGO_HOST "$TANGO_HOST"
 
 # Public ports, decided once on the first deploy and then kept: 80/443 when
@@ -265,23 +278,15 @@ done
 
 # ------------------------------------------------------------ images
 log "Pulling images"
-pull() {
-  # The registry login for this deploy lives in its own docker config, so
-  # the server's normal docker login (used by other stacks) is untouched.
-  if [ -n "${TANGO_DOCKER_CONFIG:-}" ]; then
-    if [ -d /root/.docker/cli-plugins ] && [ ! -e "$TANGO_DOCKER_CONFIG/cli-plugins" ]; then
-      ln -s /root/.docker/cli-plugins "$TANGO_DOCKER_CONFIG/cli-plugins"
-    fi
-    DOCKER_CONFIG="$TANGO_DOCKER_CONFIG" docker compose --project-directory "$DIR" "$@"
-  else
-    compose "$@"
-  fi
-}
-if [ "$PULL" = 1 ]; then
-  for i in 1 2 3; do pull --profile tools pull --quiet && break; [ $i = 3 ] && exit 1; sleep 10; done
-else
-  pull pull --quiet postgres nginx
-  pull --profile tools pull --quiet certbot
+pull_list="postgres nginx tango-node1"
+for i in 1 2 3; do
+  # shellcheck disable=SC2086
+  compose pull --quiet $pull_list && break
+  [ $i = 3 ] && exit 1
+  sleep 10
+done
+if [ "$TLS" = auto ]; then
+  compose --profile tools pull --quiet certbot
 fi
 
 # ------------------------------------------------------------ database
@@ -398,10 +403,11 @@ for _ in $(seq 1 30); do
 done
 [ "$ok" = 1 ] || { echo "ERROR: health check failed" >&2; compose ps >&2; compose logs --tail 80 >&2; exit 1; }
 
-# Remove only older Tango server images (never other projects' images).
-repo=${TANGO_IMAGE%:*}
-docker images "$repo" --format '{{.Repository}}:{{.Tag}}' | grep -vxF "$TANGO_IMAGE" | grep -v ':<none>$' |
-  xargs -r docker rmi >/dev/null 2>&1 || true
+# Keep the newest releases (the running one is always kept).
+keep=${TANGO_KEEP:-5}
+find "$DIR/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' | sort -rn | awk '{print $2}' |
+  grep -vxF "$TANGO_RELEASE" | tail -n +"$keep" |
+  while read -r old; do rm -rf -- "${DIR:?}/releases/$old"; done
 
 cat > "$DIR/connection.txt" <<EOF
 Tango Cards server ($ENVNAME)
@@ -412,7 +418,7 @@ Tango Cards server ($ENVNAME)
   Server key : $SERVER_KEY
   Health     : $base/healthcheck
   Socket     : $([ "$scheme" = https ] && echo wss || echo ws)://${base#*://}/ws
-  Image      : $TANGO_IMAGE
+  Release    : $TANGO_RELEASE
 EOF
 chmod 600 "$DIR/connection.txt"
 log "Deployed"

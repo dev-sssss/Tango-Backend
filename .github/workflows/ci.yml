@@ -39,53 +39,68 @@ jobs:
         run: go test -count=1 -timeout 15m ./...
 
   compose:
-    name: Docker Compose deploy (${{ matrix.scenario }})
+    name: Ansible + Docker Compose deploy (${{ matrix.scenario }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         # free-ports: a clean server (Tango gets 80/443).
-        # shared-server: other containers already use 80/443, the server has
-        # its own docker login and other images, and the Tango folder exists.
+        # shared-server: like the nonprod EC2 - other containers already use
+        # 80, 443 and 7350, the server has its own docker login and images,
+        # and the Tango folder already holds another compose file.
         scenario: [free-ports, shared-server]
     env:
-      TANGO_DIR: /home/runner/tango-backend
+      TANGO_DIR: /opt/tango-server
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
       - name: Script checks
         run: |
-          bash -n deploy/scripts/*.sh
-          shellcheck -S warning deploy/scripts/*.sh
+          bash -n deploy/scripts/*.sh iam/*.sh
+          shellcheck -S warning deploy/scripts/*.sh iam/*.sh
+          python3 -m py_compile scripts/check_aws_target.py
+      - name: Ansible
+        run: |
+          pip install ansible-core==2.18.6 boto3
+          ansible-galaxy collection install -r requirements.yml
+          ansible-playbook -i inventories/nonprod/hosts.yml playbooks/deploy_tango.yml --syntax-check
       - name: Existing stack on the server
         if: matrix.scenario == 'shared-server'
         run: |
-          docker run -d --name existing-proxy -p 80:80 -p 443:80 -p 7350:80 nginx:alpine   # 7350 like a Nakama server
+          docker run -d --name existing-proxy -p 80:80 -p 443:80 -p 7350:80 nginx:alpine
           docker pull -q busybox:latest
           sudo mkdir -p /root/.docker
           echo '{"auths":{"ghcr.io":{"auth":"ZXhpc3Rpbmc6bG9naW4="}}}' | sudo tee /root/.docker/config.json >/dev/null
           sudo sha256sum /root/.docker/config.json > /tmp/docker-config.sha
-          mkdir -p "$TANGO_DIR"
-          printf 'services:\n  something: {image: busybox}\n' > "$TANGO_DIR/docker-compose.yml"
-      - name: Build the server image
-        run: docker build -t tango-local:ci1 --build-arg BUILD_TIME=$(date +%s) server
-      - name: First deploy (what the EC2 deploy runs)
+          sudo mkdir -p "$TANGO_DIR"
+          printf 'services:\n  something: {image: busybox}\n' | sudo tee "$TANGO_DIR/docker-compose.yml" >/dev/null
+      - name: Build release ci1
         run: |
-          mkdir -p /tmp/tango-docker-cfg
-          sudo TANGO_IMAGE=tango-local:ci1 TANGO_HOST=127.0.0.1 TANGO_DIR="$TANGO_DIR" TANGO_TLS=off TANGO_PULL=0 \
-            TANGO_DOCKER_CONFIG=/tmp/tango-docker-cfg bash deploy/scripts/deploy.sh
+          mkdir -p artifact
+          (cd server && CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/dev-sssss/tango_backend/server/internal/server.BuildTime=$(date +%s)" -o ../artifact/tango-server-linux-amd64 ./cmd/tango-server)
+      - name: First deploy (the same playbook, run locally instead of over SSM)
+        run: |
+          TANGO_RELEASE=ci1 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+            ansible-playbook -i localhost, -c local -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
+            -e ansible_become=true playbooks/deploy_tango.yml
       - name: Smoke test
         run: |
-          base=$(sudo awk '/^  Base/{print $3}' "$TANGO_DIR/connection.txt")
-          echo "base=$base"
+          base=$(jq -r .base /tmp/result.json); echo "base=$base"
           if [ "${{ matrix.scenario }}" = shared-server ]; then [ "$base" = "http://127.0.0.1:8350" ]; else [ "$base" = "http://127.0.0.1" ]; fi
-          bash deploy/scripts/smoke-test.sh "$base" "$(sudo grep '^SERVER_KEY=' "$TANGO_DIR/.env" | cut -d= -f2)"
-      - name: Rolling update to a new image
+          bash deploy/scripts/smoke-test.sh "$base" "$(jq -r .server_key /tmp/result.json)"
+      - name: Rolling update to release ci2
         run: |
-          docker build -t tango-local:ci2 --build-arg BUILD_TIME=$(date +%s) server
-          sudo TANGO_IMAGE=tango-local:ci2 TANGO_HOST=127.0.0.1 TANGO_DIR="$TANGO_DIR" TANGO_TLS=off TANGO_PULL=0 bash deploy/scripts/deploy.sh
-          docker inspect --format '{{.Config.Image}}' tango-backend-tango-node1-1 tango-backend-tango-node2-1 | grep -c ci2 | grep -q 2
-          base=$(sudo awk '/^  Base/{print $3}' "$TANGO_DIR/connection.txt")
-          bash deploy/scripts/smoke-test.sh "$base" "$(sudo grep '^SERVER_KEY=' "$TANGO_DIR/.env" | cut -d= -f2)"
+          (cd server && CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/dev-sssss/tango_backend/server/internal/server.BuildTime=$(date +%s)" -o ../artifact/tango-server-linux-amd64 ./cmd/tango-server)
+          TANGO_RELEASE=ci2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+            ansible-playbook -i localhost, -c local -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
+            -e ansible_become=true playbooks/deploy_tango.yml
+          for n in 1 2; do
+            docker inspect --format '{{range .Mounts}}{{.Source}} {{end}}' tango-backend-tango-node$n-1 | grep -q "$TANGO_DIR/releases/ci2"
+          done
+          bash deploy/scripts/smoke-test.sh "$(jq -r .base /tmp/result.json)" "$(jq -r .server_key /tmp/result.json)"
       - name: Other stacks were not touched
         if: matrix.scenario == 'shared-server'
         run: |
@@ -93,7 +108,7 @@ jobs:
           curl -fsS http://127.0.0.1:80/ >/dev/null
           docker image inspect busybox:latest >/dev/null
           sudo sha256sum -c /tmp/docker-config.sha
-          ls "$TANGO_DIR"/docker-compose.yml.bak-*
+          sudo ls "$TANGO_DIR"/docker-compose.yml.bak-*
       - name: Backup script
         run: sudo TANGO_DIR="$TANGO_DIR" "$TANGO_DIR/bin/backup.sh" && sudo ls -l "$TANGO_DIR/backups"
       - name: Logs on failure
