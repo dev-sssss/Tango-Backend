@@ -70,10 +70,12 @@ jobs:
       - name: Existing stack on the server
         if: matrix.scenario == 'shared-server'
         run: |
-          # Like the shared Ludo nginx: owns 80/443/7350 and serves the
-          # Let's Encrypt webroot /opt/ludo-acme for every host name.
+          # Like the shared Ludo nginx: owns 443/7350, binds port 80 on the
+          # private IP only (not loopback) and serves the Let's Encrypt
+          # webroot /opt/ludo-acme for every host name.
           sudo mkdir -p /opt/ludo-acme
-          docker run -d --name existing-proxy -p 80:80 -p 443:80 -p 7350:80 \
+          ip=$(hostname -I | awk '{print $1}'); echo "PRIVATE_IP=$ip" >> "$GITHUB_ENV"
+          docker run -d --name existing-proxy -p "$ip:80:80" -p 443:80 -p 7350:80 \
             -v /opt/ludo-acme:/usr/share/nginx/html:ro nginx:alpine
           docker pull -q busybox:latest
           sudo mkdir -p /root/.docker
@@ -109,7 +111,7 @@ jobs:
         if: matrix.scenario == 'shared-server'
         run: |
           docker ps --filter name=existing-proxy --filter status=running -q | grep -q .
-          curl -sS -o /dev/null http://127.0.0.1:80/   # still answering (empty webroot gives 403)
+          curl -sS -o /dev/null "http://$PRIVATE_IP:80/"   # still answering (empty webroot gives 403)
           docker image inspect busybox:latest >/dev/null
           sudo sha256sum -c /tmp/docker-config.sha
           sudo ls "$TANGO_DIR"/docker-compose.yml.bak-*
@@ -125,8 +127,8 @@ jobs:
       - name: HTTPS through the host certbot - DNS record in place
         if: matrix.scenario == 'shared-server'
         run: |
-          echo "127.0.0.1 tango-ci.example.test" | sudo tee -a /etc/hosts
-          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=tango-ci.example.test TANGO_PUBLIC_IP=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+          echo "$PRIVATE_IP tango-ci.example.test" | sudo tee -a /etc/hosts
+          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=tango-ci.example.test TANGO_PUBLIC_IP=$PRIVATE_IP TANGO_RESULT_FILE=/tmp/result.json \
             ansible-playbook -i ci/local-inventory.ini -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
             -e tango_acme_webroot=/opt/ludo-acme playbooks/deploy_tango.yml
           base=$(jq -r .base /tmp/result.json); echo "base=$base"
@@ -144,7 +146,7 @@ jobs:
           sleep 2; after=$(serial)
           echo "$before -> $after"; [ "$before" != "$after" ]
           # a later deploy keeps HTTPS without issuing again
-          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=tango-ci.example.test TANGO_PUBLIC_IP=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=tango-ci.example.test TANGO_PUBLIC_IP=$PRIVATE_IP TANGO_RESULT_FILE=/tmp/result.json \
             ansible-playbook -i ci/local-inventory.ini -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
             -e tango_acme_webroot=/opt/ludo-acme playbooks/deploy_tango.yml
           [ "$(jq -r .base /tmp/result.json)" = "https://tango-ci.example.test:8443" ]

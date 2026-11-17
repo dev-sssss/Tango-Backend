@@ -431,11 +431,29 @@ if [ "$cert_mode" = host ]; then
   else
     mkdir -p "$challenge_dir"
     echo "$probe" > "$challenge_dir/$probe"; chmod 0644 "$challenge_dir/$probe"
-    got=$(curl -fsS --max-time 10 --resolve "$TANGO_HOST:80:127.0.0.1" \
-            "http://$TANGO_HOST/.well-known/acme-challenge/$probe" 2>/dev/null || true)
+    # Ask whatever answers port 80 for this name, the way Let's Encrypt
+    # will. The other stack may listen on one address only (on nonprod the
+    # shared nginx binds the private IP), so try loopback, every local IPv4
+    # and finally the public name itself.
+    got="" tried=""
+    url="http://$TANGO_HOST/.well-known/acme-challenge/$probe"
+    for addr in 127.0.0.1 $(hostname -I 2>/dev/null) public; do
+      case $addr in *:*) continue ;; esac
+      if [ "$addr" = public ]; then
+        res=$(curl -sS --max-time 10 -o "$challenge_dir/.tango-got" -w '%{http_code}' "$url" 2>/dev/null || true)
+      else
+        res=$(curl -sS --max-time 5 -o "$challenge_dir/.tango-got" -w '%{http_code}' \
+                --resolve "$TANGO_HOST:80:$addr" "$url" 2>/dev/null || true)
+      fi
+      tried="$tried $addr=${res:-none}"
+      got=$(cat "$challenge_dir/.tango-got" 2>/dev/null || true)
+      rm -f "$challenge_dir/.tango-got"
+      [ "$res" = 200 ] && [ "$got" = "$probe" ] && break
+      got=""
+    done
     rm -f "$challenge_dir/$probe"
     if [ "$got" != "$probe" ]; then
-      echo "WARNING: the web server on port 80 does not serve $TANGO_ACME_WEBROOT for $TANGO_HOST; serving plain HTTP for now." >&2
+      echo "WARNING: the web server on port 80 does not serve $TANGO_ACME_WEBROOT for $TANGO_HOST (HTTP status per address:$tried); serving plain HTTP for now." >&2
     elif certbot certonly --webroot -w "$TANGO_ACME_WEBROOT" -d "$TANGO_HOST" --cert-name "$TANGO_HOST" \
            --deploy-hook "$DIR/bin/sync-cert.sh" --keep-until-expiring \
            --non-interactive --agree-tos --register-unsafely-without-email; then
