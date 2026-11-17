@@ -39,31 +39,66 @@ jobs:
         run: go test -count=1 -timeout 15m ./...
 
   compose:
-    name: Docker Compose stack (deploy script, nginx, rolling update)
+    name: Docker Compose deploy (${{ matrix.scenario }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # free-ports: a clean server (Tango gets 80/443).
+        # shared-server: other containers already use 80/443, the server has
+        # its own docker login and other images, and the Tango folder exists.
+        scenario: [free-ports, shared-server]
+    env:
+      TANGO_DIR: /home/runner/tango-backend
     steps:
       - uses: actions/checkout@v4
       - name: Script checks
         run: |
           bash -n deploy/scripts/*.sh
           shellcheck -S warning deploy/scripts/*.sh
+      - name: Existing stack on the server
+        if: matrix.scenario == 'shared-server'
+        run: |
+          docker run -d --name existing-proxy -p 80:80 -p 443:80 nginx:alpine
+          docker pull -q busybox:latest
+          sudo mkdir -p /root/.docker
+          echo '{"auths":{"ghcr.io":{"auth":"ZXhpc3Rpbmc6bG9naW4="}}}' | sudo tee /root/.docker/config.json >/dev/null
+          sudo sha256sum /root/.docker/config.json > /tmp/docker-config.sha
+          mkdir -p "$TANGO_DIR"
+          printf 'services:\n  something: {image: busybox}\n' > "$TANGO_DIR/docker-compose.yml"
       - name: Build the server image
         run: docker build -t tango-local:ci1 --build-arg BUILD_TIME=$(date +%s) server
       - name: First deploy (what the EC2 deploy runs)
-        run: sudo TANGO_IMAGE=tango-local:ci1 TANGO_HOST=127.0.0.1 TANGO_TLS=off TANGO_PULL=0 bash deploy/scripts/deploy.sh
+        run: |
+          mkdir -p /tmp/tango-docker-cfg
+          sudo TANGO_IMAGE=tango-local:ci1 TANGO_HOST=127.0.0.1 TANGO_DIR="$TANGO_DIR" TANGO_TLS=off TANGO_PULL=0 \
+            TANGO_DOCKER_CONFIG=/tmp/tango-docker-cfg bash deploy/scripts/deploy.sh
       - name: Smoke test
-        run: bash deploy/scripts/smoke-test.sh http://127.0.0.1 "$(sudo grep '^SERVER_KEY=' /opt/tango/.env | cut -d= -f2)"
+        run: |
+          base=$(sudo awk '/^  Base/{print $3}' "$TANGO_DIR/connection.txt")
+          echo "base=$base"
+          if [ "${{ matrix.scenario }}" = shared-server ]; then [ "$base" = "http://127.0.0.1:7350" ]; else [ "$base" = "http://127.0.0.1" ]; fi
+          bash deploy/scripts/smoke-test.sh "$base" "$(sudo grep '^SERVER_KEY=' "$TANGO_DIR/.env" | cut -d= -f2)"
       - name: Rolling update to a new image
         run: |
           docker build -t tango-local:ci2 --build-arg BUILD_TIME=$(date +%s) server
-          sudo TANGO_IMAGE=tango-local:ci2 TANGO_HOST=127.0.0.1 TANGO_TLS=off TANGO_PULL=0 bash deploy/scripts/deploy.sh
-          docker inspect --format '{{.Config.Image}}' tango-tango-node1-1 tango-tango-node2-1 | grep -c ci2 | grep -q 2
-          bash deploy/scripts/smoke-test.sh http://127.0.0.1 "$(sudo grep '^SERVER_KEY=' /opt/tango/.env | cut -d= -f2)"
+          sudo TANGO_IMAGE=tango-local:ci2 TANGO_HOST=127.0.0.1 TANGO_DIR="$TANGO_DIR" TANGO_TLS=off TANGO_PULL=0 bash deploy/scripts/deploy.sh
+          docker inspect --format '{{.Config.Image}}' tango-backend-tango-node1-1 tango-backend-tango-node2-1 | grep -c ci2 | grep -q 2
+          base=$(sudo awk '/^  Base/{print $3}' "$TANGO_DIR/connection.txt")
+          bash deploy/scripts/smoke-test.sh "$base" "$(sudo grep '^SERVER_KEY=' "$TANGO_DIR/.env" | cut -d= -f2)"
+      - name: Other stacks were not touched
+        if: matrix.scenario == 'shared-server'
+        run: |
+          docker ps --filter name=existing-proxy --filter status=running -q | grep -q .
+          curl -fsS http://127.0.0.1:80/ >/dev/null
+          docker image inspect busybox:latest >/dev/null
+          sudo sha256sum -c /tmp/docker-config.sha
+          ls "$TANGO_DIR"/docker-compose.yml.bak-*
       - name: Backup script
-        run: sudo TANGO_DIR=/opt/tango /opt/tango/bin/backup.sh && sudo ls -l /opt/tango/backups
+        run: sudo TANGO_DIR="$TANGO_DIR" "$TANGO_DIR/bin/backup.sh" && sudo ls -l "$TANGO_DIR/backups"
       - name: Logs on failure
         if: failure()
-        run: sudo docker compose --project-directory /opt/tango logs --tail 100 || true
+        run: sudo docker compose --project-directory "$TANGO_DIR" logs --tail 100 || true
 
   image:
     name: Multi-arch image build (not pushed)

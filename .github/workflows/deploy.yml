@@ -4,19 +4,24 @@ name: Deploy to EC2
 #   1. tests the server
 #   2. builds the server image (amd64 + arm64) and pushes it to GitHub
 #      Container Registry (ghcr.io/dev-sssss/tango-backend)
-#   3. connects to your EC2 over SSH and runs deploy/scripts/deploy.sh:
-#      installs Docker if needed and starts/updates the Docker Compose stack
-#      (Postgres, two game nodes, nginx + HTTPS) in /opt/tango; game nodes
-#      restart one at a time so no live match is interrupted
+#   3. connects to your EC2 over SSH, goes to your Tango folder and runs
+#      deploy/scripts/deploy.sh there: writes docker-compose.yml + .env with
+#      the new image and starts/updates the stack (Postgres, two game nodes,
+#      nginx). Game nodes restart one at a time so no live match is cut off.
+#      Other Docker Compose stacks on the server are not touched.
 #   4. checks the server from outside (HTTPS, sign-in, RPCs)
 #
 # Repository secrets (Settings > Secrets and variables > Actions):
 #   EC2_HOST      the Elastic IP of the instance
 #   EC2_USER      SSH user (ubuntu on Ubuntu, ec2-user on Amazon Linux)
 #   EC2_SSH_KEY   the private key (.pem file contents) for that user
-# Optional repository variable:
-#   TANGO_DOMAIN  a domain pointing at the Elastic IP (otherwise the IP is used)
-# The EC2 security group must allow 22 (SSH), 80 and 443.
+# Optional repository variables:
+#   EC2_DEPLOY_PATH  the Tango folder on the server. If not set, the workflow
+#                    finds the one folder named like "*tango*" in the SSH
+#                    user's home, /opt or /srv.
+#   TANGO_DOMAIN     a domain pointing at the Elastic IP (otherwise the IP)
+# Security group: 22 (SSH) and either 80+443 (if free on the server: HTTPS)
+# or 7350 (used when 80/443 already belong to another stack: HTTP).
 
 on:
   workflow_dispatch:
@@ -134,6 +139,26 @@ jobs:
             ConnectTimeout 20
           EOF
           ssh ec2 'echo "connected to $(hostname) ($(uname -m))"'
+      - name: Find the Tango folder on the server
+        id: dir
+        env:
+          DEPLOY_PATH: ${{ vars.EC2_DEPLOY_PATH }}
+        run: |
+          dir="$DEPLOY_PATH"
+          if [ -z "$dir" ]; then
+            found=$(ssh ec2 'find ~ /opt /srv -mindepth 1 -maxdepth 2 -type d -iname "*tango*" -not -path "*/.*" 2>/dev/null' | sort -u)
+            n=$(printf '%s' "$found" | grep -c . || true)
+            if [ "$n" != 1 ]; then
+              echo "::error::Could not pick the Tango folder automatically (found $n):"
+              printf '%s\n' "$found"
+              echo "Set the repository variable EC2_DEPLOY_PATH to the folder's full path."
+              exit 1
+            fi
+            dir=$found
+          fi
+          ssh ec2 "test -d '$dir'" || { echo "::error::Folder $dir does not exist on the server"; exit 1; }
+          echo "Deploying into $dir"
+          echo "path=$dir" >> "$GITHUB_OUTPUT"
       - name: Upload deploy files
         run: |
           tar -czf /tmp/tango-deploy.tgz -C deploy .
@@ -142,18 +167,26 @@ jobs:
       - name: Docker on the server
         run: ssh ec2 'sudo bash /tmp/tango-deploy/scripts/install-docker.sh'
       - name: Deploy
+        env:
+          TANGO_DIR: ${{ steps.dir.outputs.path }}
         run: |
-          # Short-lived registry login, only for this deploy.
-          echo "${{ secrets.GITHUB_TOKEN }}" | ssh ec2 "sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin" >/dev/null
-          ssh ec2 "sudo TANGO_IMAGE='${{ needs.image.outputs.image }}' TANGO_HOST='${TANGO_HOST}' bash /tmp/tango-deploy/scripts/deploy.sh"
-      - name: Registry logout
+          # Short-lived registry login kept in its own docker config dir, so
+          # the server's normal docker login (other stacks) is not changed.
+          echo "${{ secrets.GITHUB_TOKEN }}" | ssh ec2 "sudo bash -c 'umask 077; rm -rf /tmp/tango-docker-cfg; mkdir -p /tmp/tango-docker-cfg; DOCKER_CONFIG=/tmp/tango-docker-cfg docker login ghcr.io -u ${{ github.actor }} --password-stdin'" >/dev/null
+          ssh ec2 "sudo TANGO_IMAGE='${{ needs.image.outputs.image }}' TANGO_HOST='${TANGO_HOST}' TANGO_DIR='${TANGO_DIR}' TANGO_DOCKER_CONFIG=/tmp/tango-docker-cfg bash /tmp/tango-deploy/scripts/deploy.sh"
+      - name: Remove the temporary registry login
         if: always()
-        run: ssh ec2 'sudo docker logout ghcr.io >/dev/null 2>&1; rm -rf /tmp/tango-deploy' || true
+        run: ssh ec2 'sudo rm -rf /tmp/tango-docker-cfg /tmp/tango-deploy' || true
       - name: Smoke test from outside
+        env:
+          TANGO_DIR: ${{ steps.dir.outputs.path }}
         run: |
-          key=$(ssh ec2 "sudo grep '^SERVER_KEY=' /opt/tango/.env | cut -d= -f2")
-          scheme=$(ssh ec2 "sudo awk '/Scheme/{print \$3}' /opt/tango/connection.txt")
-          bash deploy/scripts/smoke-test.sh "${scheme}://${TANGO_HOST}" "$key"
+          key=$(ssh ec2 "sudo grep '^SERVER_KEY=' '${TANGO_DIR}/.env' | cut -d= -f2")
+          base=$(ssh ec2 "sudo awk '/^  Base/{print \$3}' '${TANGO_DIR}/connection.txt'")
+          scheme=${base%%://*}
+          hostport=${base#*://}
+          port=${hostport##*:}; [ "$port" = "$hostport" ] && port=$([ "$scheme" = https ] && echo 443 || echo 80)
+          bash deploy/scripts/smoke-test.sh "$base" "$key"
           {
             echo "## Tango Cards server is live"
             echo
@@ -161,9 +194,10 @@ jobs:
             echo "|---|---|"
             echo "| Scheme | \`${scheme}\` |"
             echo "| Host | \`${TANGO_HOST}\` |"
-            echo "| Port | \`$([ "$scheme" = https ] && echo 443 || echo 80)\` |"
+            echo "| Port | \`${port}\` |"
             echo "| Server key | \`${key}\` |"
-            echo "| Health check | ${scheme}://${TANGO_HOST}/healthcheck |"
+            echo "| Health check | ${base}/healthcheck |"
+            echo "| Folder on server | \`${TANGO_DIR}\` |"
             echo
             echo "Image: \`${{ needs.image.outputs.image }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

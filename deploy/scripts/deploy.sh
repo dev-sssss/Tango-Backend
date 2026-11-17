@@ -4,17 +4,25 @@
 # database is kept, and the two game nodes restart one at a time so no live
 # match is interrupted.
 #
+# It lives side by side with other Docker Compose stacks on the server: its
+# own project name, network and volume; it only publishes ports that are
+# free; it never prunes other images and never changes the server's own
+# docker login.
+#
 # Usage (as root or with sudo), from the unpacked deploy folder:
-#   TANGO_IMAGE=ghcr.io/dev-sssss/tango-backend:<tag> TANGO_HOST=<elastic-ip or domain> scripts/deploy.sh
+#   TANGO_IMAGE=ghcr.io/dev-sssss/tango-backend:<tag> TANGO_HOST=<elastic-ip or domain> \
+#   TANGO_DIR=/home/ubuntu/tango-backend scripts/deploy.sh
 #
 # Settings (environment):
-#   TANGO_IMAGE   server image to run (required)
-#   TANGO_HOST    public IP or domain clients use (required)
-#   TANGO_DIR     install directory               (default /opt/tango)
-#   TANGO_ENV     nonprod | production            (default nonprod)
-#   TANGO_TLS     auto | off   (auto = Let's Encrypt certificate for TANGO_HOST)
-#   TANGO_PULL    1 | 0        (0 = image already on this machine, e.g. CI)
-#   ALLOW_CHEATS  true | false (dev shortcut RPC; always off in production)
+#   TANGO_IMAGE          server image to run (required)
+#   TANGO_HOST           public IP or domain clients use (required)
+#   TANGO_DIR            deploy folder on this server (default /opt/tango)
+#   TANGO_ENV            nonprod | production (default nonprod)
+#   TANGO_TLS            auto | off (auto = Let's Encrypt certificate when ports 80/443 are ours)
+#   TANGO_HTTP_PORT      force the public HTTP port (first deploy only)
+#   TANGO_PULL           1 | 0 (0 = image already on this machine, e.g. CI)
+#   TANGO_DOCKER_CONFIG  docker config dir holding the registry login for this deploy
+#   ALLOW_CHEATS         true | false (dev shortcut RPC; always off in production)
 set -euo pipefail
 [ "$(id -u)" = 0 ] || exec sudo -E bash "$0" "$@"
 
@@ -29,6 +37,7 @@ CHEATS=${ALLOW_CHEATS:-true}
 [ "$ENVNAME" = production ] && CHEATS=false
 
 log() { printf '\n==> %s\n' "$*"; }
+port_free() { ! (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print $4}' | grep -Eq "[:.]$1\$"; }
 compose() { docker compose --project-directory "$DIR" "$@"; }
 is_ip() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 
@@ -37,6 +46,11 @@ bash "$SRC/scripts/install-docker.sh"
 
 log "Files in $DIR"
 mkdir -p "$DIR"/{config,nginx,certbot/www,certbot/conf,backups,bin}
+if [ -f "$DIR/docker-compose.yml" ] && ! grep -q '^name: tango-backend' "$DIR/docker-compose.yml"; then
+  bak="$DIR/docker-compose.yml.bak-$(date +%Y%m%d%H%M%S)"
+  echo "An existing docker-compose.yml in $DIR is not the Tango one; saved it as $bak"
+  mv "$DIR/docker-compose.yml" "$bak"
+fi
 install -m 0644 "$SRC/docker-compose.yml" "$DIR/docker-compose.yml"
 install -m 0755 "$SRC/scripts/backup.sh" "$DIR/bin/backup.sh"
 
@@ -66,6 +80,22 @@ set_env() {
 }
 set_env TANGO_IMAGE "$TANGO_IMAGE"
 set_env TANGO_HOST "$TANGO_HOST"
+
+# Public ports, decided once on the first deploy and then kept: 80/443 when
+# they are free (HTTPS with Let's Encrypt), otherwise 7350 (plain HTTP) so
+# whatever already uses 80/443 on this server keeps working.
+if ! grep -q '^HTTP_PORT=' "$envfile"; then
+  if [ -n "${TANGO_HTTP_PORT:-}" ]; then
+    hp=$TANGO_HTTP_PORT; sp=${TANGO_HTTPS_PORT:-7443}
+  elif port_free 80 && port_free 443; then
+    hp=80; sp=443
+  else
+    hp=7350; sp=7443
+    echo "Ports 80/443 are used by something else on this server; Tango will listen on port $hp (HTTP)."
+  fi
+  set_env HTTP_PORT "$hp"
+  set_env HTTPS_PORT "$sp"
+fi
 set -a
 # shellcheck source=/dev/null
 . "$envfile"
@@ -92,7 +122,7 @@ socket:
   port: 7350
   trusted_proxy_header: X-Forwarded-For
 security:
-  trusted_proxies: ["172.28.0.0/24"]
+  trusted_proxies: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 runtime:
   http_key: "${HTTP_KEY}"
   env:
@@ -202,6 +232,9 @@ EOF
   return 0
 }
 
+if [ "$HTTP_PORT" != 80 ] && [ "$TLS" = auto ]; then
+  TLS=off   # Let's Encrypt must reach port 80; another program owns it
+fi
 cert="$DIR/certbot/conf/live/tango/fullchain.pem"
 have_cert=0; [ -f "$cert" ] && have_cert=1
 [ "$TLS" = off ] && have_cert=0
@@ -210,24 +243,40 @@ if write_nginx "$have_cert"; then nginx_changed=1; fi
 
 # ------------------------------------------------------------ ports free?
 nginx_running=$(compose ps -q nginx 2>/dev/null || true)
+check_port() {
+  if ! port_free "$1"; then
+    echo "ERROR: port $1 is already used by another program on this server:" >&2
+    (ss -ltnp 2>/dev/null | grep -E "[:.]$1 " || true) >&2
+    echo "Set TANGO_HTTP_PORT to a free port (or free this one) and deploy again." >&2
+    exit 1
+  fi
+}
 if [ -z "$nginx_running" ]; then
-  for p in "${HTTP_PORT:-80}" "${HTTPS_PORT:-443}"; do
-    if (ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null) | awk '{print $4}' | grep -Eq "[:.]$p\$"; then
-      echo "ERROR: port $p is already used by another program on this server:" >&2
-      (ss -ltnp 2>/dev/null | grep -E "[:.]$p " || true) >&2
-      echo "Stop it (e.g. a host nginx/apache) and run the deploy again." >&2
-      exit 1
-    fi
-  done
+  check_port "$HTTP_PORT"; check_port "$HTTPS_PORT"
 fi
+for n in 1 2; do
+  [ -n "$(compose ps -q "tango-node$n" 2>/dev/null)" ] || check_port "1736$n"
+done
 
 # ------------------------------------------------------------ images
 log "Pulling images"
+pull() {
+  # The registry login for this deploy lives in its own docker config, so
+  # the server's normal docker login (used by other stacks) is untouched.
+  if [ -n "${TANGO_DOCKER_CONFIG:-}" ]; then
+    if [ -d /root/.docker/cli-plugins ] && [ ! -e "$TANGO_DOCKER_CONFIG/cli-plugins" ]; then
+      ln -s /root/.docker/cli-plugins "$TANGO_DOCKER_CONFIG/cli-plugins"
+    fi
+    DOCKER_CONFIG="$TANGO_DOCKER_CONFIG" docker compose --project-directory "$DIR" "$@"
+  else
+    compose "$@"
+  fi
+}
 if [ "$PULL" = 1 ]; then
-  for i in 1 2 3; do compose --profile tools pull --quiet && break; [ $i = 3 ] && exit 1; sleep 10; done
+  for i in 1 2 3; do pull --profile tools pull --quiet && break; [ $i = 3 ] && exit 1; sleep 10; done
 else
-  compose pull --quiet postgres nginx
-  compose --profile tools pull --quiet certbot
+  pull pull --quiet postgres nginx
+  pull --profile tools pull --quiet certbot
 fi
 
 # ------------------------------------------------------------ database
@@ -245,7 +294,7 @@ wait_node() { # $1 admin port
   compose logs --tail 50 >&2 || true
   return 1
 }
-for node in node1:7361 node2:7362; do
+for node in node1:17361 node2:17362; do
   name=${node%%:*}; port=${node##*:}
   log "Game $name"
   flags=""
@@ -329,26 +378,35 @@ fi
 
 # ------------------------------------------------------------ check
 log "Health check"
-scheme=http; [ "$have_cert" = 1 ] && scheme=https
+if [ "$have_cert" = 1 ]; then
+  scheme=https; port=$HTTPS_PORT
+else
+  scheme=http; port=$HTTP_PORT
+fi
+base="$scheme://$TANGO_HOST"
+{ [ "$scheme" = https ] && [ "$port" = 443 ]; } || { [ "$scheme" = http ] && [ "$port" = 80 ]; } || base="$base:$port"
 ok=0
 for _ in $(seq 1 30); do
-  if curl -fsS --max-time 5 "$scheme://$TANGO_HOST/healthcheck" >/dev/null 2>&1 ||
-     curl -fsS --max-time 5 "http://127.0.0.1:${HTTP_PORT:-80}/healthcheck" >/dev/null 2>&1; then ok=1; break; fi
+  if curl -fsS --max-time 5 "$base/healthcheck" >/dev/null 2>&1 ||
+     curl -fsS --max-time 5 "http://127.0.0.1:$HTTP_PORT/healthcheck" >/dev/null 2>&1; then ok=1; break; fi
   sleep 2
 done
 [ "$ok" = 1 ] || { echo "ERROR: health check failed" >&2; compose ps >&2; compose logs --tail 80 >&2; exit 1; }
 
-docker image prune -af --filter "until=72h" >/dev/null 2>&1 || true
+# Remove only older Tango server images (never other projects' images).
+repo=${TANGO_IMAGE%:*}
+docker images "$repo" --format '{{.Repository}}:{{.Tag}}' | grep -vxF "$TANGO_IMAGE" | grep -v ':<none>$' |
+  xargs -r docker rmi >/dev/null 2>&1 || true
 
-port=80; [ "$scheme" = https ] && port=443
 cat > "$DIR/connection.txt" <<EOF
 Tango Cards server ($ENVNAME)
+  Base       : $base
   Scheme     : $scheme
   Host       : $TANGO_HOST
   Port       : $port
   Server key : $SERVER_KEY
-  Health     : $scheme://$TANGO_HOST/healthcheck
-  Socket     : $([ "$scheme" = https ] && echo wss || echo ws)://$TANGO_HOST/ws
+  Health     : $base/healthcheck
+  Socket     : $([ "$scheme" = https ] && echo wss || echo ws)://${base#*://}/ws
   Image      : $TANGO_IMAGE
 EOF
 chmod 600 "$DIR/connection.txt"

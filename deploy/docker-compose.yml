@@ -1,5 +1,7 @@
-# Tango Cards server stack. Copied to /opt/tango by scripts/deploy.sh, which
-# also writes /opt/tango/.env (image + generated secrets) and the configs.
+# Tango Cards server stack. Copied into the deploy folder by scripts/deploy.sh,
+# which also writes .env (image, ports, generated secrets) and the configs.
+# It is its own Compose project ("tango-backend") with its own network and
+# volume, so other Compose stacks on the same server are not touched.
 #
 #   postgres     database (accounts, wallets, storage, leaderboards, cluster state)
 #   tango-node1  game server node (HTTP API + WebSocket + match host)
@@ -7,7 +9,7 @@
 #                matches move to the other node, so no game is interrupted
 #   nginx        TLS, WebSocket upgrade, load balancing, rate limits
 #   certbot      issues/renews the Let's Encrypt certificate (run on demand)
-name: tango
+name: tango-backend
 
 x-node: &node
   image: ${TANGO_IMAGE:?TANGO_IMAGE must be set in .env}
@@ -57,13 +59,13 @@ services:
     <<: *node
     command: ["--config", "/etc/tango/node.yml", "--name", "node1", "--cluster.advertise_address", "tango-node1:7352"]
     ports:
-      - "127.0.0.1:7361:7351" # admin/health, local only
+      - "127.0.0.1:17361:7351" # admin/health, local only
 
   tango-node2:
     <<: *node
     command: ["--config", "/etc/tango/node.yml", "--name", "node2", "--cluster.advertise_address", "tango-node2:7352"]
     ports:
-      - "127.0.0.1:7362:7351"
+      - "127.0.0.1:17362:7351"
 
   nginx:
     image: nginx:1.28-alpine
@@ -91,7 +93,4 @@ volumes:
   pgdata: {}
 
 networks:
-  tango:
-    ipam:
-      config:
-        - subnet: 172.28.0.0/24
+  tango: {}
