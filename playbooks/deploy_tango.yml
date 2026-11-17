@@ -19,6 +19,7 @@
 
 - name: Deploy the Tango Cards backend
   hosts: game_servers
+  become: true
   gather_facts: true
   gather_subset: [min]
   vars:
@@ -99,17 +100,19 @@
     - name: Read the connection details
       ansible.builtin.slurp:
         src: "{{ tango_dir }}/connection.txt"
-      register: connection
+      register: conn_file
       no_log: true
 
     - name: Hand them to the runner for the smoke test
       ansible.builtin.copy:
         content: >-
-          {{ {'base': (connection.content | b64decode | regex_search('Base\s*:\s*(\S+)', '\1') | first),
-              'server_key': (connection.content | b64decode | regex_search('Server key\s*:\s*(\S+)', '\1') | first),
+          {{ {'base': (conn_file.content | b64decode | regex_search('Base\s*:\s*(\S+)', '\1') | first),
+              'server_key': (conn_file.content | b64decode | regex_search('Server key\s*:\s*(\S+)', '\1') | first),
               'release': release, 'arch': tango_arch, 'dir': tango_dir} | to_json }}
         dest: "{{ result_file }}"
         mode: '0600'
       delegate_to: localhost
       become: false
+      vars:
+        ansible_become: false
       no_log: true
