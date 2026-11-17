@@ -117,7 +117,6 @@ jobs:
         with:
           role-to-assume: ${{ steps.target.outputs.deploy_role_arn }}
           aws-region: ${{ steps.target.outputs.region }}
-          allowed-account-ids: ${{ steps.target.outputs.account_id }}
           role-session-name: tango-deploy-${{ github.run_id }}
       - name: Verify account, instance and SSM
         id: check
