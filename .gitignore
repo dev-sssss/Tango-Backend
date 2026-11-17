@@ -10,3 +10,7 @@ Thumbs.db
 .idea/
 __pycache__/
 *.pyc
+
+# client-check build output
+client-check/bin/
+client-check/obj/
