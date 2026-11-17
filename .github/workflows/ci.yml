@@ -151,6 +151,11 @@ jobs:
             -e tango_acme_webroot=/opt/ludo-acme playbooks/deploy_tango.yml
           [ "$(jq -r .base /tmp/result.json)" = "https://tango-ci.example.test:8443" ]
           [ "$(serial)" = "$after" ]
+      - name: The Unity game's network code plays real matches on this server
+        if: matrix.scenario == 'free-ports'
+        run: |
+          key=$(jq -r .server_key /tmp/result.json)
+          dotnet run --project client-check -c Release -- http 127.0.0.1 80 "$key"
       - name: Backup script
         run: sudo TANGO_DIR="$TANGO_DIR" "$TANGO_DIR/bin/backup.sh" && sudo ls -l "$TANGO_DIR/backups"
       - name: Logs on failure

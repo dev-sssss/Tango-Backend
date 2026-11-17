@@ -145,6 +145,7 @@ jobs:
           TANGO_RESULT_FILE: ${{ runner.temp }}/tango-deploy-result.json
         run: ansible-playbook -i "inventories/${{ inputs.environment }}/hosts.yml" playbooks/deploy_tango.yml
       - name: Smoke test from the internet
+        id: smoke
         env:
           RESULT: ${{ runner.temp }}/tango-deploy-result.json
         run: |
@@ -161,6 +162,7 @@ jobs:
             fi
           fi
           bash deploy/scripts/smoke-test.sh "$base" "$key"
+          echo "base=$base" >> "$GITHUB_OUTPUT"; echo "key=$key" >> "$GITHUB_OUTPUT"
           {
             echo "## Tango backend deployed (${{ inputs.environment }})"
             echo
@@ -174,3 +176,14 @@ jobs:
             echo
             echo "Release \`$(jq -r .release "$RESULT")\` ($(jq -r .arch "$RESULT")) in \`$(jq -r .dir "$RESULT")\`"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Client check (the Unity game's network code plays real matches)
+        if: ${{ inputs.environment == 'nonprod' }}
+        env:
+          BASE: ${{ steps.smoke.outputs.base }}
+          KEY: ${{ steps.smoke.outputs.key }}
+        run: |
+          set -o pipefail
+          scheme=${BASE%%://*}; hostport=${BASE#*://}; host=${hostport%%:*}; port=${hostport##*:}
+          [ "$port" = "$hostport" ] && port=$([ "$scheme" = https ] && echo 443 || echo 80)
+          dotnet run --project client-check -c Release -- "$scheme" "$host" "$port" "$KEY" | tee /tmp/client-check.txt
+          { echo; echo "### Client check"; echo '```'; grep -E "ok  |result:|PASSED|FAILED" /tmp/client-check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
