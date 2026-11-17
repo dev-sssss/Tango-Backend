@@ -109,7 +109,7 @@ jobs:
         if: matrix.scenario == 'shared-server'
         run: |
           docker ps --filter name=existing-proxy --filter status=running -q | grep -q .
-          curl -fsS http://127.0.0.1:80/ >/dev/null
+          curl -sS -o /dev/null http://127.0.0.1:80/   # still answering (empty webroot gives 403)
           docker image inspect busybox:latest >/dev/null
           sudo sha256sum -c /tmp/docker-config.sha
           sudo ls "$TANGO_DIR"/docker-compose.yml.bak-*
