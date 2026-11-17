@@ -77,13 +77,13 @@ jobs:
           sudo sha256sum /root/.docker/config.json > /tmp/docker-config.sha
           sudo mkdir -p "$TANGO_DIR"
           printf 'services:\n  something: {image: busybox}\n' | sudo tee "$TANGO_DIR/docker-compose.yml" >/dev/null
-      - name: Build release ci1
+      - name: Build release ci-release-1
         run: |
           mkdir -p artifact
           (cd server && CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/dev-sssss/tango_backend/server/internal/server.BuildTime=$(date +%s)" -o ../artifact/tango-server-linux-amd64 ./cmd/tango-server)
       - name: First deploy (the same playbook, run locally instead of over SSM)
         run: |
-          TANGO_RELEASE=ci1 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+          TANGO_RELEASE=ci-release-1 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
             ansible-playbook -i ci/local-inventory.ini -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
             -e ansible_become=true playbooks/deploy_tango.yml
       - name: Smoke test
@@ -91,14 +91,14 @@ jobs:
           base=$(jq -r .base /tmp/result.json); echo "base=$base"
           if [ "${{ matrix.scenario }}" = shared-server ]; then [ "$base" = "http://127.0.0.1:8350" ]; else [ "$base" = "http://127.0.0.1" ]; fi
           bash deploy/scripts/smoke-test.sh "$base" "$(jq -r .server_key /tmp/result.json)"
-      - name: Rolling update to release ci2
+      - name: Rolling update to release ci-release-2
         run: |
           (cd server && CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/dev-sssss/tango_backend/server/internal/server.BuildTime=$(date +%s)" -o ../artifact/tango-server-linux-amd64 ./cmd/tango-server)
-          TANGO_RELEASE=ci2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
+          TANGO_RELEASE=ci-release-2 TANGO_ARTIFACT_DIR=$PWD/artifact TANGO_PUBLIC_HOST=127.0.0.1 TANGO_RESULT_FILE=/tmp/result.json \
             ansible-playbook -i ci/local-inventory.ini -e tango_dir=$TANGO_DIR -e environment_name=nonprod -e tango_allow_cheats=true \
             -e ansible_become=true playbooks/deploy_tango.yml
           for n in 1 2; do
-            docker inspect --format '{{range .Mounts}}{{.Source}} {{end}}' tango-backend-tango-node$n-1 | grep -q "$TANGO_DIR/releases/ci2"
+            docker inspect --format '{{range .Mounts}}{{.Source}} {{end}}' tango-backend-tango-node$n-1 | grep -q "$TANGO_DIR/releases/ci-release-2"
           done
           bash deploy/scripts/smoke-test.sh "$(jq -r .base /tmp/result.json)" "$(jq -r .server_key /tmp/result.json)"
       - name: Other stacks were not touched
