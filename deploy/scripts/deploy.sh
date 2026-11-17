@@ -405,8 +405,8 @@ done
 
 # Keep the newest releases (the running one is always kept).
 keep=${TANGO_KEEP:-5}
-find "$DIR/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' | sort -rn | awk '{print $2}' |
-  grep -vxF "$TANGO_RELEASE" | tail -n +"$keep" |
+{ find "$DIR/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' | sort -rn | awk '{print $2}' |
+    grep -vxF "$TANGO_RELEASE" || true; } | tail -n +"$keep" |
   while read -r old; do rm -rf -- "${DIR:?}/releases/$old"; done
 
 cat > "$DIR/connection.txt" <<EOF

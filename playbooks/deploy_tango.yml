@@ -26,6 +26,8 @@
     artifact_dir: "{{ lookup('env', 'TANGO_ARTIFACT_DIR') }}"
     public_host: "{{ lookup('env', 'TANGO_PUBLIC_HOST') }}"
     result_file: "{{ lookup('env', 'TANGO_RESULT_FILE') | default('/tmp/tango-deploy-result.json', true) }}"
+    # auto = Let's Encrypt certificate when ports 80/443 are free for Tango
+    tls_mode: "{{ lookup('env', 'TANGO_TLS') | default('auto', true) }}"
   tasks:
     - name: Require a release, the binaries and the public host
       ansible.builtin.assert:
@@ -84,6 +86,7 @@
         TANGO_HOST: "{{ public_host }}"
         TANGO_DIR: "{{ tango_dir }}"
         TANGO_ENV: "{{ environment_name }}"
+        TANGO_TLS: "{{ tls_mode }}"
         ALLOW_CHEATS: "{{ 'true' if (tango_allow_cheats | bool) and environment_name != 'production' else 'false' }}"
         PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
       register: deploy
