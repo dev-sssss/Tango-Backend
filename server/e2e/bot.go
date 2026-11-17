@@ -412,6 +412,10 @@ func (b *Bot) act() {
 	switch g["phase"] {
 	case "color":
 		b.sendOp(11, map[string]any{"color": color})
+	case "swap":
+		if ts, _ := g["swap_targets"].([]any); len(ts) > 0 {
+			b.sendOp(13, map[string]any{"seat": ts[0]})
+		}
 	case "keep":
 		b.sendOp(3, map[string]any{"play": true, "color": color})
 	case "turn":

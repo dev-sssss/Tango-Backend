@@ -82,6 +82,55 @@ static class Program
             await b.FriendAction((string)incoming["user_id"], "accept");
             Check(((Newtonsoft.Json.Linq.JArray)(await a.Friends())["friends"]).Count == 1, "now friends");
 
+            Console.WriteLine("== player ID made with the account");
+            Check(a.Profile.PlayerId.Length == 8 && a.Profile.PlayerId == codeA, "player ID " + a.Profile.PlayerId + " in the profile and the friends screen");
+            Check((await a.RefreshProfile()).PlayerId == codeA, "player ID stays the same");
+
+            Console.WriteLine("== Classic 2 vs 2 room: a stranger joins by code, an invited friend sits on the host's team");
+            var s = NewClient(cfg, "check-s-" + suffix);
+            await s.Initialize();
+            await s.SetName("Check S");
+            var croom = await a.CreateRoom("classic", "2v2", 10, true, 3);
+            Check(croom.IsHost && croom.Teams && croom.Capacity == 4 && croom.Preset == "team", "Classic team room " + croom.RoomCode + " created");
+            await s.JoinRoom(croom.RoomCode);
+            await a.InviteFriend(b.Net.Session.UserId, croom.RoomCode, "classic", "2v2");
+            var inv = (await b.RoomInvites())["invites"].First;
+            Check(inv != null && (string)inv["room_code"] == croom.RoomCode && (string)inv["from"]["user_id"] == a.Net.Session.UserId, "invite arrived in the friend's inbox");
+            await b.AnswerInvite(a.Net.Session.UserId);
+            await b.JoinRoom(croom.RoomCode, a.Net.Session.UserId);
+            Check(!((Newtonsoft.Json.Linq.JArray)(await b.RoomInvites())["invites"]).Any(), "answered invite is gone");
+            await a.StartRoom();
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while ((a.Match?.Started != true || b.Match?.Started != true) && DateTime.UtcNow < until) { a.Pump(); b.Pump(); s.Pump(); await Task.Delay(50); }
+            var seats = a.Match.View().Players;
+            int teamA = seats.First(x => x.Name == "Check A").Team, teamB = seats.First(x => x.Name == "Check B").Team, teamS = seats.First(x => x.Name == "Check S").Team;
+            Check(teamA == teamB && teamA != teamS, "teams: host and invited friend together, stranger on the other side");
+            await Play(new[] { a, b, s }, TimeSpan.FromSeconds(300));
+            Check(a.Match.Results.Count == 4, "Classic team game played to the end");
+            await a.Leave(); await b.Leave(); await s.Leave();
+
+            Console.WriteLine("== rankings");
+            foreach (var id in new[] { "trophies", "weekly_trophies", "wins", "friends" })
+            {
+                var board = await a.Leaderboard(id);
+                Console.WriteLine($"     {id}: {board.Rows.Count} rows, my rank {board.MyRank} score {board.MyScore}");
+                Check(board.Rows.Count > 0 && board.Rows.All(r => r.Rank > 0 && r.Name.Length > 0), id + " board has ranked rows");
+            }
+            var pa = await a.RefreshProfile();
+            Check((await a.Leaderboard("trophies")).MyScore == pa.Trophies, "trophy board shows the profile's " + pa.Trophies + " trophies");
+            var fr = await a.Leaderboard("friends");
+            Check(fr.Rows.Any(r => r.UserId == b.Net.Session.UserId) && fr.Rows.Any(r => r.UserId == a.Net.Session.UserId), "friends board shows you and your friend");
+
+            Console.WriteLine("== lucky spin");
+            var spin = await s.SpinStatus();
+            Check(spin.FreeLeft == 1 && spin.PrizeCoins.Count == 8, "one free spin today, 8 slices");
+            await s.RefreshProfile();
+            int coins0 = s.Profile.Coins, dia0 = s.Profile.Diamonds;
+            var won = await s.Spin(false);
+            Check(won.Slice >= 0 && won.WonCoins == spin.PrizeCoins[won.Slice] && won.WonDiamonds == spin.PrizeDiamonds[won.Slice], $"landed on slice {won.Slice}: +{won.WonCoins} coins +{won.WonDiamonds} diamonds");
+            Check(s.Profile.Coins == coins0 + won.WonCoins && s.Profile.Diamonds == dia0 + won.WonDiamonds, "prize paid into the wallet");
+            try { await s.Spin(false); Check(false, "second free spin should be refused"); } catch (InvalidOperationException ex) { Check(true, "second free spin refused: " + ex.Message); }
+
             Console.WriteLine("== reconnect in the middle of a game");
             var c = NewClient(cfg, "check-c-" + suffix);
             await c.Initialize();

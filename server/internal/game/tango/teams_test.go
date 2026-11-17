@@ -51,3 +51,28 @@ func TestInviteToFullTeamGoesToOtherTeam(t *testing.T) {
 		t.Fatalf("plan %v", plan)
 	}
 }
+
+// A player out on the 25-card rule can reconnect and watch the end; one
+// removed for missing turns cannot come back.
+func TestMercyOutPlayerCanRejoin(t *testing.T) {
+	h := newHarness(t, 5, map[string]any{"mode": ModeNoMercy, "format": Format4P, "private": true, "host_id": "a"})
+	for _, u := range []string{"a", "b", "c", "d"} {
+		h.join(u)
+	}
+	h.send("a", OpStart, map[string]any{})
+	for i := 0; i < 200 && h.m.s.Status != StatusPlaying; i++ {
+		h.tick(100)
+	}
+	if h.m.s.Status != StatusPlaying {
+		t.Fatalf("status %v", h.m.s.Status)
+	}
+	b, c := h.m.seatOf("b"), h.m.seatOf("c")
+	h.m.s.Seats[b].Player.Removed, h.m.s.Seats[b].Player.RemovedReason = true, "mercy"
+	h.m.s.Seats[c].Player.Removed, h.m.s.Seats[c].Player.RemovedReason = true, "idle"
+	if ok, reason := h.m.JoinAttempt(h.mc, h.d, h.tk, pres("b"), nil); !ok {
+		t.Fatalf("mercy-out player refused: %s", reason)
+	}
+	if ok, reason := h.m.JoinAttempt(h.mc, h.d, h.tk, pres("c"), nil); ok || reason != "REMOVED" {
+		t.Fatalf("idle-removed player: %v %s", ok, reason)
+	}
+}

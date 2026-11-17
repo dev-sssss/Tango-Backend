@@ -273,7 +273,8 @@ func (m *Match) ctx(mc *game.MatchContext) context.Context {
 func (m *Match) JoinAttempt(mc *game.MatchContext, d game.Dispatcher, tick int64, p game.Presence, metadata map[string]string) (bool, string) {
 	s := m.s
 	if i := m.seatOf(p.UserID); i >= 0 {
-		if s.Seats[i].Player.Removed {
+		// Out on the 25-card rule: still at the table, so they can come back and watch the end.
+		if s.Seats[i].Player.Removed && s.Seats[i].Player.RemovedReason != "mercy" {
 			return false, "REMOVED"
 		}
 		return true, ""
