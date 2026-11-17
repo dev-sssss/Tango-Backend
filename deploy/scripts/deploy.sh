@@ -301,7 +301,10 @@ EOF
     echo '}'
   } > "$out"
   if cmp -s "$out" "$DIR/nginx/nginx.conf" 2>/dev/null; then rm -f "$out"; return 1; fi
-  mv "$out" "$DIR/nginx/nginx.conf"
+  # Rewrite in place: nginx.conf is bind-mounted as a single file, so a new
+  # inode (mv) would not be seen by the running container.
+  cat "$out" > "$DIR/nginx/nginx.conf"
+  rm -f "$out"
   return 0
 }
 
