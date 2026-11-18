@@ -3,9 +3,9 @@ package e2e
 import (
 	"bytes"
 	"fmt"
-	"sync"
 	"io"
 	"net/http"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
