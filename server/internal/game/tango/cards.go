@@ -33,6 +33,9 @@ const (
 	KindDraw4      = "draw4"       // coloured +4
 	KindSkipAll    = "skip_all"    // skips everyone else: the same player goes again
 	KindDiscardAll = "discard_all" // also discards every other card of its colour from the hand
+	// No Mercy's black cards besides +6 and +10.
+	KindWildRev4 = "wild_rev4" // Wild Reverse Draw 4: reverses play, then the next player draws 4
+	KindRoulette = "roulette"  // Wild Color Roulette: the next player names a colour and turns cards until it shows
 )
 
 // MercyLimit: in No Mercy a player who reaches this many cards is out.
@@ -73,7 +76,7 @@ func (c Card) IsWild() bool { return c.Color == ColorWild }
 
 // IsWildPlus reports the black plus cards (+4, +6, +10).
 func (c Card) IsWildPlus() bool {
-	return c.Kind == KindWild4 || c.Kind == KindWild6 || c.Kind == KindWild10
+	return c.Kind == KindWild4 || c.Kind == KindWildRev4 || c.Kind == KindWild6 || c.Kind == KindWild10
 }
 
 // IsPlus reports any card that adds to a draw stack.
@@ -84,7 +87,7 @@ func (c Card) DrawAmount() int {
 	switch c.Kind {
 	case KindDraw2:
 		return 2
-	case KindWild4, KindDraw4:
+	case KindWild4, KindWildRev4, KindDraw4:
 		return 4
 	case KindWild6:
 		return 6
@@ -120,17 +123,19 @@ type deckSpec struct {
 	zeros, perNumber, skips, reverses, draw2s int // per colour
 	draw4s, skipAlls, discardAlls             int // per colour (No Mercy)
 	wild, wild4, wild6, wild10                int // black cards
+	wildRev4, roulettes                       int // black cards (No Mercy)
 }
 
 var deckSpecs = map[string]deckSpec{
 	// 108 cards: per colour one 0, two of 1-9, two Skip, two Reverse, two +2;
 	// four Wild and four Wild +4.
 	ModeClassic: {zeros: 1, perNumber: 2, skips: 2, reverses: 2, draw2s: 2, wild: 4, wild4: 4},
-	// No Mercy, 160 cards: per colour two of 0-9, three Skip, three Reverse,
-	// three +2, three Discard All, two coloured +4 and two Skip Everyone;
-	// eight Wild +4, four Wild +6 and four Wild +10 (the game's own deck).
+	// No Mercy, the official 168 cards: per colour two of 0-9, three Skip,
+	// three Reverse, three +2, three Discard All, two coloured +4 and two Skip
+	// Everyone; eight Wild Reverse +4, four Wild +6, four Wild +10 and eight
+	// Wild Color Roulette. There is no plain Wild and no plain Wild +4.
 	ModeNoMercy: {zeros: 2, perNumber: 2, skips: 3, reverses: 3, draw2s: 3, draw4s: 2, skipAlls: 2, discardAlls: 3,
-		wild4: 8, wild6: 4, wild10: 4},
+		wildRev4: 8, wild6: 4, wild10: 4, roulettes: 8},
 }
 
 // ValidMode reports whether mode names a playable deck.
@@ -164,6 +169,8 @@ func NewDeck(mode string) []Card {
 	add(ColorWild, KindWild4, 0, spec.wild4)
 	add(ColorWild, KindWild6, 0, spec.wild6)
 	add(ColorWild, KindWild10, 0, spec.wild10)
+	add(ColorWild, KindWildRev4, 0, spec.wildRev4)
+	add(ColorWild, KindRoulette, 0, spec.roulettes)
 	return d
 }
 

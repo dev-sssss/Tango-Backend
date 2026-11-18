@@ -99,7 +99,7 @@ namespace UnoGame.Online
                         {
                             Emit("play", seat, -1, 1, card.Color, card);
                             if (card.Kind == "reverse") Emit("reverse", seat, -1, -lastDir);
-                            if (card.Kind == "draw2" || card.Kind == "draw4" || card.Kind == "draw6" || card.Kind == "draw10") { plusPendingSeat = seat; lastPlusSeat = seat; }
+                            if (card.Kind == "draw2" || card.Kind == "draw4" || card.Kind == "draw6" || card.Kind == "draw10" || card.Kind == "reverseDraw4") { plusPendingSeat = seat; lastPlusSeat = seat; }
                         }
                     }
                     changed = true;
@@ -138,6 +138,10 @@ namespace UnoGame.Online
                         case "rotate": Emit("rotate0", seat, -1, (int?)m["dir"] ?? lastDir); break;
                         case "swap": Emit("swap7", seat, (int?)m["target"] ?? -1, 0); break;
                         case "time_up": Emit("timeUp", seat, -1, (int?)m["points"] ?? 0); break;
+                        // Wild Reverse +4 turns play around before the draw lands.
+                        case "reverse": Emit("reverse", seat, -1, (int?)m["dir"] ?? -lastDir); lastDir = (int?)m["dir"] ?? -lastDir; break;
+                        // Color Roulette: the player it hits names a colour and turns cards until it shows.
+                        case "roulette": Emit("roulette", seat, (int?)m["target"] ?? -1, 0); break;
                     }
                     changed = true;
                     break;
@@ -215,7 +219,12 @@ namespace UnoGame.Online
             snap.RoomCode = (string)State["room_code"] ?? "";
             snap.Capacity = (int?)State["max_players"] ?? players.Count;
             snap.IsHost = me >= 0 && me < players.Count && ((bool?)players[me]?["is_host"] ?? false);
+            snap.Private = (bool?)State["private"] ?? false;
+            snap.Party = (bool?)State["party"] ?? false;
+            snap.Fee = (int?)State["fee"] ?? 0;
+            snap.FillAtUnixMs = (long?)State["fill_at_ms"] ?? 0;
             snap.Started = Started;
+            snap.Starting = Status == "STARTING";
             snap.Teams = teams;
             snap.Preset = PresetOf((string)State["mode"], teams);
             snap.ServerTimeUnixMs = ServerTimeMs;
@@ -254,7 +263,7 @@ namespace UnoGame.Online
             int phaseSeat = (int?)g["phase_seat"] ?? (int?)g["turn"] ?? 0;
             bool mine = !over && me >= 0 && phaseSeat == me;
             JObject self = me >= 0 && me < players.Count ? players[me] as JObject : null;
-            var hand = Cards(self?["hand"] as JArray);
+            var hand = SortHand(Cards(self?["hand"] as JArray));
             bool vulnerable = (bool?)self?["vulnerable"] ?? false, tango = (bool?)self?["tango"] ?? false, removed = (bool?)self?["removed"] ?? false;
             bool teams = IsTeams;
             string format = (string)State["format"] ?? "1v1";
@@ -263,14 +272,15 @@ namespace UnoGame.Online
                 MatchId = MatchId + ":" + ((int?)State["round"] ?? 1), RoomCode = (string)State["room_code"] ?? "",
                 Mode = teams ? "duo" : players.Count == 2 ? "duel" : players.Count == 4 ? "solo4" : "room",
                 Preset = PresetOf((string)State["mode"], teams),
-                Phase = over ? "matchOver" : phase == "keep" ? "drawnWild" : phase == "color" ? "chooseColor" : phase == "swap" ? "swap7" : "playing",
+                Phase = over ? "matchOver" : phase == "keep" ? "drawnWild" : phase == "color" ? "chooseColor" : phase == "swap" ? "swap7" : phase == "roulette" ? "rouletteColor" : "playing",
                 ActiveColor = (string)g["color"] ?? "", Message = "", Revision = Revision, CurrentSeat = phaseSeat, TurnId = turnId,
                 LocalSeat = Math.Max(0, me), Direction = (int?)g["dir"] ?? 1, WinnerSeat = WinnerSeat,
                 RoundPoints = Results.Where(r => !r.Winner).Sum(r => r.Points), TargetScore = 0,
                 PendingDraw = (int?)g["pending"] ?? 0, TopCard = ToCard(g["top"] as JObject), Hand = hand,
                 CanDraw = mine && phase == "turn" && !removed,
                 CanPass = mine && phase == "keep",
-                CanChooseColor = mine && (phase == "keep" || phase == "color"),
+                CanChooseColor = mine && (phase == "keep" || phase == "color" || phase == "roulette"),
+                CanChooseRouletteColor = mine && phase == "roulette",
                 CanChallenge = mine && ((bool?)g["can_challenge"] ?? false),
                 CanChooseSwap = mine && phase == "swap",
                 EndsAtUnixMs = (long?)g["ends_at_ms"] ?? 0, TimeUp = (string)g["over_reason"] == "time_up"
@@ -278,6 +288,7 @@ namespace UnoGame.Online
             if (v.CanChooseSwap && g["swap_targets"] is JArray swapTargets)
                 foreach (var target in swapTargets) v.SwapTargets.Add((int)target);
             v.ChallengeSeat = v.CanChallenge ? lastPlusSeat : -1;
+            v.ChallengeColor = v.CanChallenge ? (string)g["challenge_color"] ?? "" : "";
             v.CanCallUno = !over && !tango && !removed && ((mine && phase == "turn" && hand.Count == 2) || (hand.Count == 1 && vulnerable));
             if (mine && phase == "turn" && g["playable"] is JArray playable)
                 foreach (var id in playable) v.PlayableCardIds.Add(((int)id).ToString());
@@ -294,7 +305,7 @@ namespace UnoGame.Online
                     v.LastCardCalls.Add(new LastCardCall { Id = i + 1, Seat = i, ExpiresAtUnixMs = localNow + 8000 });
                 }
                 if (teams && i != me && p["hand"] is JArray allyCards && !theirRemoved)
-                    v.AllyHands.Add(new AllyHand { Seat = i, Cards = Cards(allyCards) });
+                    v.AllyHands.Add(new AllyHand { Seat = i, Cards = SortHand(Cards(allyCards)) });
             }
             v.CanCatchUno = v.CatchTargets.Count > 0;
             foreach (var e in events) v.Events.Add(e.Copy());
@@ -351,6 +362,19 @@ namespace UnoGame.Online
             return results;
         }
 
+        static readonly string[] ColorOrder = { "red", "yellow", "green", "blue", "wild" };
+        static readonly string[] KindOrder = { "number", "skip", "reverse", "draw2", "draw4", "skipAll", "discardAll", "reverseDraw4", "draw6", "draw10", "roulette", "wild" };
+        /// <summary>
+        /// The hand grouped by colour (red, yellow, green, blue, then black cards), numbers in order and action cards after them,
+        /// so cards drawn from the pile join their colour instead of landing at the end.
+        /// </summary>
+        public static List<Card> SortHand(List<Card> cards)
+        {
+            int Rank(string[] order, string key) { int i = Array.IndexOf(order, key ?? ""); return i < 0 ? order.Length : i; }
+            return cards.OrderBy(c => Rank(ColorOrder, c.Color)).ThenBy(c => Rank(KindOrder, c.Kind)).ThenBy(c => c.Number)
+                .ThenBy(c => int.TryParse(c.Id, out int n) ? n : 0).ToList();
+        }
+
         static List<Card> Cards(JArray list) => list == null ? new List<Card>() : list.OfType<JObject>().Select(ToCard).Where(c => c != null).ToList();
 
         /// <summary>Server card → the table's card (black plus cards are "draw4/6/10" with colour "wild").</summary>
@@ -361,6 +385,7 @@ namespace UnoGame.Online
             switch (kind)
             {
                 case "wild4": kind = "draw4"; break;
+                case "wild_rev4": kind = "reverseDraw4"; break;
                 case "wild6": kind = "draw6"; break;
                 case "wild10": kind = "draw10"; break;
                 case "skip_all": kind = "skipAll"; break;

@@ -122,12 +122,12 @@ func (m *Match) view(seat int) map[string]any {
 		players = append(players, pv)
 	}
 	v := map[string]any{"match_id": s.MatchID, "mode": s.Mode, "format": s.Format, "fee": s.Fee, "private": s.Private,
-		"room_code": s.RoomCode, "status": s.Status, "round": s.Round, "settings": s.Settings, "you": seat,
+		"room_code": s.RoomCode, "party": s.Party, "host_id": s.HostID, "status": s.Status, "round": s.Round, "settings": s.Settings, "you": seat,
 		"max_players": m.maxSeats(), "players": players, "rev": s.Rev}
 	switch s.Status {
 	case StatusWaiting:
 		if !s.Private {
-			v["fill_at_ms"] = s.CreatedMs + lobbyWaitMs
+			v["fill_at_ms"] = m.waitFrom() + lobbyWaitMs
 		}
 	case StatusStarting:
 		v["start_at_ms"] = s.StartAtMs
@@ -147,6 +147,9 @@ func (m *Match) view(seat int) map[string]any {
 		if seat >= 0 {
 			g["playable"] = t.Playable(seat)
 			g["can_challenge"] = t.CanChallenge(seat)
+			if t.CanChallenge(seat) {
+				g["challenge_color"] = t.Chal.ColorBefore // the colour that was in play before the black plus
+			}
 			if t.Phase == PhaseKeep && t.PhaseSeat == seat && t.Drawn != nil {
 				g["drawn"] = *t.Drawn
 			}

@@ -102,18 +102,23 @@ type Seat struct {
 
 // State is the whole match, serialised for live handover and crash restore.
 type State struct {
-	Schema     int                      `json:"schema"`
-	MatchID    string                   `json:"match_id"`
-	Mode       string                   `json:"mode"`
-	Format     string                   `json:"format"`
-	Fee        int64                    `json:"fee"`
-	Private    bool                     `json:"private"`
-	RoomCode   string                   `json:"room_code,omitempty"`
-	HostID     string                   `json:"host_id,omitempty"`
-	Settings   Settings                 `json:"settings"`
-	Status     string                   `json:"status"`
-	Round      int                      `json:"round"`
-	CreatedMs  int64                    `json:"created_ms"`
+	Schema    int      `json:"schema"`
+	MatchID   string   `json:"match_id"`
+	Mode      string   `json:"mode"`
+	Format    string   `json:"format"`
+	Fee       int64    `json:"fee"`
+	Private   bool     `json:"private"`
+	RoomCode  string   `json:"room_code,omitempty"`
+	HostID    string   `json:"host_id,omitempty"`
+	Settings  Settings `json:"settings"`
+	Status    string   `json:"status"`
+	Round     int      `json:"round"`
+	CreatedMs int64    `json:"created_ms"`
+	// PublicFromMs: a friends party that went looking for opponents; the
+	// public wait (then bots) counts from here instead of CreatedMs.
+	PublicFromMs int64 `json:"public_from_ms,omitempty"`
+	// Party: this public table was started by a group of friends.
+	Party      bool                     `json:"party,omitempty"`
 	StartAtMs  int64                    `json:"start_at_ms"`
 	StartedMs  int64                    `json:"started_ms"`
 	EndAtMs    int64                    `json:"end_at_ms"`
@@ -237,10 +242,18 @@ func (m *Match) Init(mc *game.MatchContext, params map[string]any) (int, string)
 
 func (m *Match) maxSeats() int { return FormatPlayers(m.s.Format) }
 
+// waitFrom is when a public table started waiting for players.
+func (m *Match) waitFrom() int64 {
+	if m.s.PublicFromMs > 0 {
+		return m.s.PublicFromMs
+	}
+	return m.s.CreatedMs
+}
+
 func (m *Match) label() string {
 	s := m.s
 	l := game.Encode(map[string]any{"game": "tango", "mode": s.Mode, "format": s.Format, "fee": s.Fee, "private": s.Private,
-		"status": s.Status, "players": len(s.Seats), "max": m.maxSeats(), "room_code": s.RoomCode})
+		"party": s.Party, "status": s.Status, "players": len(s.Seats), "max": m.maxSeats(), "room_code": s.RoomCode})
 	s.Label = l
 	return l
 }
@@ -483,7 +496,7 @@ func (m *Match) Loop(mc *game.MatchContext, d game.Dispatcher, tick int64, messa
 			if now-s.CreatedMs > emptyMatchMs {
 				return false
 			}
-		} else if !s.Private && now-s.CreatedMs >= lobbyWaitMs && m.connectedHumans() > 0 {
+		} else if !s.Private && now-m.waitFrom() >= lobbyWaitMs && m.connectedHumans() > 0 {
 			m.fillBots()
 			m.maybeStart(d, now)
 			m.broadcastLobby(d)
@@ -975,6 +988,37 @@ func (m *Match) Signal(mc *game.MatchContext, d game.Dispatcher, tick int64, dat
 	req, _ := game.DecodeObject(data)
 	now := m.nk.NowMs()
 	switch req["action"] {
+	case "GO_PUBLIC":
+		// A friends party (private room) looks for opponents: the room becomes
+		// a public table with an entry fee; strangers fill the empty seats
+		// (the party keeps its teams) and bots fill what is left after the wait.
+		uid, _ := req["user_id"].(string)
+		fee := numParam(req["fee"], -1)
+		if !s.Private || s.Status != StatusWaiting || uid == "" || uid != s.HostID || fee < 0 {
+			return true, `{"ok":false,"error":"NOT_ALLOWED"}`
+		}
+		if len(s.Seats) >= m.maxSeats() {
+			return true, `{"ok":false,"error":"ROOM_FULL"}`
+		}
+		if fee > 0 {
+			for _, st := range s.Seats {
+				if st.Player.Bot {
+					continue
+				}
+				acct, err := m.nk.AccountGet(m.ctx(mc), st.Player.UserID)
+				if err != nil {
+					return true, `{"ok":false,"error":"ACCOUNT_ERROR"}`
+				}
+				if acct.Wallet["coins"] < fee {
+					return true, game.Encode(map[string]any{"ok": false, "error": "INSUFFICIENT_COINS", "name": st.Player.Name})
+				}
+			}
+		}
+		s.Private, s.Party, s.Fee, s.PublicFromMs = false, true, fee, now
+		s.Settings = Settings{TurnSeconds: defaultTurnSeconds, Emotes: true}
+		m.updateLabel(d)
+		m.broadcastLobby(d)
+		return true, `{"ok":true}`
 	case "CANCEL_EMPTY_MATCH":
 		if len(s.Seats) == 0 {
 			return false, `{"cancelled":true}`

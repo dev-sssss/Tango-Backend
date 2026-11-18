@@ -346,6 +346,16 @@ func dropRelation(ctx context.Context, tx pgx.Tx, a, b string) error {
 	return err
 }
 
+// OnlineCounts: players seen within the online window (any node), and those
+// in a match. Presence is flushed every 30 s, so this lags by up to that.
+func (f *Friends) OnlineCounts(ctx context.Context) (online, inGame int, err error) {
+	err = f.db.QueryRow(ctx, `SELECT count(*) FILTER (WHERE last_seen > now() - $1::interval),
+		count(*) FILTER (WHERE in_match_until > now())
+		FROM user_presence WHERE last_seen > now() - $1::interval OR in_match_until > now()`,
+		fmt.Sprintf("%d seconds", int(onlineWindow.Seconds()))).Scan(&online, &inGame)
+	return online, inGame, err
+}
+
 // FriendFind looks a player up by friend code or username without sending
 // anything, so the app can show who it found before the request goes out.
 func (f *Friends) FriendFind(ctx context.Context, userID, query string) (map[string]any, error) {
@@ -718,6 +728,10 @@ func (f *Friends) rewardReferrer(ctx context.Context, invitee string) error {
 func (n *PgNK) FriendsList(ctx context.Context, userID string) (map[string]any, error) {
 	return n.friends.FriendsList(ctx, userID)
 }
+func (n *PgNK) OnlineCounts(ctx context.Context) (int, int, error) {
+	return n.friends.OnlineCounts(ctx)
+}
+
 func (n *PgNK) FriendFind(ctx context.Context, userID, query string) (map[string]any, error) {
 	return n.friends.FriendFind(ctx, userID, query)
 }

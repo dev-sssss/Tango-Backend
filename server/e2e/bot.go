@@ -410,7 +410,7 @@ func (b *Bot) act() {
 	b.actedRev, b.actedAt = rev, time.Now()
 	color := b.bestColor(st)
 	switch g["phase"] {
-	case "color":
+	case "color", "roulette":
 		b.sendOp(11, map[string]any{"color": color})
 	case "swap":
 		if ts, _ := g["swap_targets"].([]any); len(ts) > 0 {

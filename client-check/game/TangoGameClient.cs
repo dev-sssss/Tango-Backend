@@ -239,6 +239,26 @@ namespace UnoGame.Online
         }
 
         public Task StartRoom() => Match == null ? Task.CompletedTask : Net.SendMatch(Match.MatchId, TangoMatch.SendStart);
+
+        /// <summary>
+        /// Host of a friends party: take the party to public matchmaking with this entry fee. Players pressing Play on the same
+        /// table sit down with you (your friends stay on your team); bots fill what is left after the wait.
+        /// </summary>
+        public async Task FindOpponents(int fee)
+        {
+            if (Match == null) throw new InvalidOperationException("Create the party first.");
+            await Call("tango.room.find_opponents", new JObject { ["match_id"] = Match.MatchId, ["fee"] = fee });
+        }
+
+        /// <summary>Players online now and how many wait at each public table of the mode.</summary>
+        public async Task<LobbyStats> LobbyStats(string mode)
+        {
+            var r = await Call("tango.lobby.stats", new JObject { ["mode"] = mode });
+            var stats = new LobbyStats { Online = (int?)r["online"] ?? 0, InGame = (int?)r["in_game"] ?? 0 };
+            if (r["waiting"] is JObject waiting)
+                foreach (var kv in waiting) stats.Waiting[kv.Key] = (int?)kv.Value ?? 0;
+            return stats;
+        }
         public Task Rematch() => Match == null ? Task.CompletedTask : Net.SendMatch(Match.MatchId, TangoMatch.SendRematch);
         public Task SendEmote(string id) => Match == null ? Task.CompletedTask : Net.SendMatch(Match.MatchId, TangoMatch.SendEmote, new JObject { ["id"] = id });
 
@@ -367,7 +387,8 @@ namespace UnoGame.Online
                 case "ROOM_NOT_FOUND": return "No room with that code. Check the code and try again.";
                 case "ROOM_STARTED": return "That room's match has already started.";
                 case "ROOM_FULL": return "That room is full.";
-                case "INSUFFICIENT_COINS": return "You need more coins for this entry fee.";
+                case "INSUFFICIENT_COINS": return string.IsNullOrEmpty(message) ? "You need more coins for this entry fee." : message;
+                case "NOT_ALLOWED": return "Only the party leader can start the search.";
                 case "MAINTENANCE": return string.IsNullOrEmpty(message) ? "The server is under maintenance. Please try again soon." : message;
                 case "RATE_LIMITED": return "Too many tries. Wait a moment and try again.";
                 case "ALREADY_IN_MATCH": return "You are already at a table.";

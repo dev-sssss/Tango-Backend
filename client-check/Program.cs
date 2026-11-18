@@ -109,6 +109,32 @@ static class Program
             Check(a.Match.Results.Count == 4, "Classic team game played to the end");
             await a.Leave(); await b.Leave(); await s.Leave();
 
+            Console.WriteLine("== party: friends take a Classic 2 vs 2 table to public matchmaking together");
+            var party = await a.CreateRoom("classic", "2v2", 10, true, 0);
+            await a.InviteFriend(b.Net.Session.UserId, party.RoomCode, "classic", "2v2");
+            await b.AnswerInvite(a.Net.Session.UserId);
+            await b.JoinRoom(party.RoomCode, a.Net.Session.UserId);
+            try { await b.FindOpponents(200); Check(false, "only the leader may start the search"); } catch (InvalidOperationException ex) { Check(true, "friend can't start the search: " + ex.Message); }
+            await a.FindOpponents(200);
+            var stranger = NewClient(cfg, "check-p-" + suffix);
+            await stranger.Initialize();
+            await stranger.SetName("Check P");
+            await stranger.QuickMatch("classic", "2v2", 200);
+            Check(stranger.Match.MatchId == a.Match.MatchId, "a player pressing PLAY on that table joins the party's match");
+            until = DateTime.UtcNow.AddSeconds(40);
+            while ((a.Match?.Started != true || stranger.Match?.Started != true) && DateTime.UtcNow < until) { a.Pump(); b.Pump(); stranger.Pump(); await Task.Delay(50); }
+            Check(a.Match.Started, "bots filled the last seat after the wait and the game started");
+            seats = a.Match.View().Players;
+            teamA = seats.First(x => x.Name == "Check A").Team; teamB = seats.First(x => x.Name == "Check B").Team; int teamP = seats.First(x => x.Name == "Check P").Team;
+            Check(teamA == teamB && teamP != teamA, "party together on one team, the stranger on the other");
+            await Play(new[] { a, b, stranger }, TimeSpan.FromSeconds(300));
+            Check(a.Match.Results.Count == 4, "party game played to the end");
+            await a.Leave(); await b.Leave(); await stranger.Leave();
+
+            Console.WriteLine("== live lobby counts");
+            var stats = await a.LobbyStats("classic");
+            Check(stats.Online >= 1, "players online: " + stats.Online);
+
             Console.WriteLine("== rankings");
             foreach (var id in new[] { "trophies", "weekly_trophies", "wins", "friends" })
             {

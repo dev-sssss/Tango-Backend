@@ -29,6 +29,9 @@ type Social interface {
 	// PlayerID returns the player's permanent public ID (the friend code),
 	// creating it on first use.
 	PlayerID(ctx context.Context, userID string) (string, error)
+	// OnlineCounts returns how many players were seen in the last few
+	// minutes across the cluster, and how many of them are in a match.
+	OnlineCounts(ctx context.Context) (online, inGame int, err error)
 }
 
 // SocialFrom returns nk's Social implementation, if any.

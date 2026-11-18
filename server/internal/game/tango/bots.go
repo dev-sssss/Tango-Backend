@@ -51,6 +51,8 @@ func DecideBot(t *Table, seat int, rng RNG) Move {
 		return Move{Kind: "color", Color: BestColor(p.Hand, rng)}
 	case PhaseSwap:
 		return Move{Kind: "swap", Target: t.FewestCards(seat)}
+	case PhaseRoulette:
+		return Move{Kind: "color", Color: Colors[rng.RandInt(0, len(Colors)-1)]}
 	case PhaseKeep:
 		if rng.RandInt(1, 100) <= 70 {
 			return Move{Kind: "play_drawn", Color: BestColor(without(p.Hand, t.Drawn.ID), rng), Tango: armTango(p, rng)}

@@ -58,6 +58,8 @@ with `"success": true` or `"success": false, "error": "<CODE>"`.
 | `tango.ads.claim_reward` | `{}` after a completed rewarded ad | `coins` (250–300), `remaining_today`, `wallet`. Limits: 10/day, 30 s apart |
 | `tango.iap.verify_google` | `{"receipt":"<purchase JSON from Play Billing>"}` | `credited`, `wallet` (enable with `GOOGLE_IAP_ENABLED`) |
 | `tango.dev.grant` | `{}` | +10,000 coins, +1,000 diamonds. **Non-prod only** (the tap-coins-three-times shortcut) |
+| `tango.room.find_opponents` | `{"match_id":"…","fee":200}` | Party leader only: the friends room (still waiting) becomes the public waiting table for its mode/format at that fee. Strangers who quick-join that table sit down; the party keeps its teams; bots fill the rest 15 s later. Refused with `INSUFFICIENT_COINS` (`message` names who can't pay) or `NOT_ALLOWED` |
+| `tango.lobby.stats` | `{"mode":"classic"}` | `online`, `in_game` (players seen in the last 3 min) and `waiting`: `{"2v2_400": 1, …}` players waiting at each public table of the mode |
 | `tango.match.quick_join` | `{"mode":"classic"\|"no_mercy","format":"1v1"\|"2v2"\|"4v4"\|"4p"\|"8p","fee":200}` | `match_id` → join it on the socket. Fees: 200, 400, 1000, 2000, 5000. `4p`/`8p`: everyone for themselves |
 | `tango.room.create` | `{"mode","format","fee":0,"settings":{"turn_seconds":15,"emotes":true,"spectators":false,"mic":false}}` | `room_code` (6 digits), `match_id` |
 | `tango.room.join` | `{"room_code":"123456"}` | `match_id`. Errors: `ROOM_NOT_FOUND`, `ROOM_STARTED`, `ROOM_FULL`. Join the match with metadata `{"team_with":"<inviter user_id>"}` after accepting an invite to sit on the inviter's team (2v2/4v4) |
@@ -158,13 +160,25 @@ correct the device clock for countdowns.
 * `hand` is present only for you and, in 2v2/4v4, your teammates.
 * `playable` lists the card ids you may play right now: make those glow.
 * Card kinds: `number` (with `value`), `skip`, `reverse`, `draw2`, `wild`,
-  `wild4`, `wild6`, `wild10`; No Mercy adds coloured `draw4`, `skip_all` and
-  `discard_all`. Black cards have `color: "wild"`; the colour in play is
-  `game.color`.
-* No Mercy (160 cards): 0 passes every hand in the direction of play, 7 swaps
-  hands with a chosen player, and a player who reaches 25 cards is out
-  (`player_removed` with `reason: "mercy"`); the last player or team standing
-  wins.
+  `wild4` (Classic); No Mercy uses coloured `draw4`, `skip_all`,
+  `discard_all` and the black `wild_rev4` (Wild Reverse +4), `wild6`, `wild10`
+  and `roulette` (Wild Color Roulette). Black cards have `color: "wild"`; the
+  colour in play is `game.color`.
+* No Mercy follows the official rules with the 168-card deck: a player who
+  can't play draws until a playable card turns up (it is played for them; a
+  black draw card offers keep or play); stacking takes any draw card of equal
+  or higher value, any colour; there is no challenge; Wild Reverse +4 turns
+  play round (`effect` `reverse`) and the next player in the new direction
+  draws 4; Color Roulette (`effect` `roulette`, `target`) puts the next player
+  in phase `roulette`: they send CHOOSE_COLOR and turn cards until that colour
+  shows (`cards_drawn` `reason: "roulette"`), then lose the turn. 0 passes
+  every hand in the direction of play, 7 swaps hands with a chosen player, and
+  a player who reaches 25 cards is out (`player_removed` with
+  `reason: "mercy"`); the last player or team standing wins. A player out on
+  the 25-card rule may reconnect and watch the end.
+* Classic keeps its house rules: a black plus answers any stack, a coloured
+  +2 only in the colour in play, and the first black plus of a stack can be
+  challenged (`game.challenge_color` is the colour it was played over).
 * Match clock: `game.ends_at_ms` (Classic 3 min, No Mercy 5 min, or the room's
   `settings.match_minutes` 3/5/10). When it runs out the fewest points win
   (`game.over_reason: "time_up"`). Turns are 10 s by default; three missed
@@ -172,7 +186,8 @@ correct the device clock for countdowns.
   diamonds (`results[].diamonds`).
 * Phases: `turn` (play/draw, or stack/draw/challenge when `pending > 0`),
   `color` (choose a colour), `keep` (keep or play the drawn black plus),
-  `swap` (No Mercy 7: pick a seat from `game.swap_targets`), `over`.
+  `swap` (No Mercy 7: pick a seat from `game.swap_targets`), `roulette`
+  (No Mercy: the player in `phase_seat` names a colour), `over`.
 * Teams sit alternately (seats 0/2 vs 1/3 in 2v2).
 * `rev` only grows; ignore any state with a lower `rev` than you have.
 

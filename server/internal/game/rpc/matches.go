@@ -227,3 +227,79 @@ func (s *Service) forfeitActive(c *Context, payload string) (string, error) {
 	}
 	return ok(map[string]any{"match_id": id})
 }
+
+// findOpponents: the host of a friends party (a private room) takes it to
+// public matchmaking with an entry fee. The room becomes the advertised
+// waiting table for (mode, format, fee), so players pressing Play on that
+// table sit down with the party; bots fill what is left after the wait.
+func (s *Service) findOpponents(c *Context, payload string) (string, error) {
+	ctx := c.context()
+	if reason := s.blocked(c, "online_matches"); reason != "" {
+		return enc(map[string]any{"success": false, "error": "MAINTENANCE", "message": reason}), nil
+	}
+	data := parse(payload)
+	id, fee := str(data, "match_id", 128), num(data, "fee", 0)
+	if !s.loadAppConfig(ctx).feeAllowed(fee) {
+		return refuse("INVALID_REQUEST")
+	}
+	l, live := s.matchLabel(c, id)
+	if !live || l["status"] != tango.StatusWaiting {
+		return refuse("ROOM_CLOSED")
+	}
+	mode, _ := l["mode"].(string)
+	format, _ := l["format"].(string)
+	resp, err := s.NK.MatchSignal(ctx, id, enc(map[string]any{"action": "GO_PUBLIC", "user_id": c.UserID, "fee": fee}))
+	if err != nil {
+		return refuse("ROOM_CLOSED")
+	}
+	r := parse(resp)
+	if r["ok"] != true {
+		code, _ := r["error"].(string)
+		if code == "" {
+			code = "NOT_ALLOWED"
+		}
+		out := map[string]any{"success": false, "error": code}
+		if name, _ := r["name"].(string); name != "" {
+			out["name"] = name
+			out["message"] = name + " doesn't have enough coins for this table."
+		}
+		return enc(out), nil
+	}
+	key := fmt.Sprintf("waiting_%s_%s_%d", mode, format, fee)
+	if _, err := s.NK.StorageWrite(ctx, []*game.Write{{Collection: "matchmaking", Key: key,
+		Value: map[string]any{"match_id": id, "created_by": c.UserID, "created_ms": s.NK.NowMs(), "party": true}}}); err != nil {
+		return "", err
+	}
+	return ok(map[string]any{"status": "searching", "match_id": id, "mode": mode, "format": format, "fee": fee})
+}
+
+// lobbyStats: players online right now and who is waiting at each public
+// table of a mode, so the table picker can show where the players are.
+func (s *Service) lobbyStats(c *Context, payload string) (string, error) {
+	ctx := c.context()
+	data := parse(payload)
+	mode := str(data, "mode", 16)
+	out := map[string]any{"online": 0, "in_game": 0}
+	if soc, has := game.SocialFrom(s.NK); has {
+		if online, inGame, err := soc.OnlineCounts(ctx); err == nil {
+			out["online"], out["in_game"] = online, inGame
+		}
+	}
+	if tango.ValidMode(mode) {
+		waiting := map[string]any{}
+		for _, format := range []string{tango.Format1v1, tango.Format2v2, tango.Format4P, tango.Format4v4, tango.Format8P} {
+			for _, fee := range s.loadAppConfig(ctx).EntryFees {
+				key := fmt.Sprintf("waiting_%s_%s_%d", mode, format, fee)
+				row, err := s.read1(ctx, "matchmaking", key, "")
+				if err != nil || row == nil {
+					continue
+				}
+				if l, found := s.matchLabel(c, row.Value["match_id"]); found && l["status"] == tango.StatusWaiting && num(l, "players", 0) > 0 && num(l, "players", 0) < num(l, "max", 0) {
+					waiting[fmt.Sprintf("%s_%d", format, fee)] = num(l, "players", 0)
+				}
+			}
+		}
+		out["waiting"] = waiting
+	}
+	return ok(out)
+}

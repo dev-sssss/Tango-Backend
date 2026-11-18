@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
+	"sync"
 	"io"
 	"net/http"
 	"syscall"
@@ -213,6 +215,53 @@ func TestClusterRollingDeploy(t *testing.T) {
 	for _, b := range bots {
 		if b.MaxRollback.Load() > 2 {
 			t.Fatalf("%s saw a rollback of %d revisions", b.Name, b.MaxRollback.Load())
+		}
+	}
+}
+
+// TestQuickJoinSameTime: like the live setup (two full nodes behind one
+// load balancer), two players press Start at the same moment through
+// different nodes. They must land in the same match and play each other,
+// not each get a bot.
+func TestQuickJoinSameTime(t *testing.T) {
+	c := newCluster(t)
+	defer c.stopAll()
+	n1 := &node{name: "node1", roles: "gateway,game", base: 17600, log: c.dir + "/node1.log"}
+	n2 := &node{name: "node2", roles: "gateway,game", base: 17610, log: c.dir + "/node2.log"}
+	c.start(n1)
+	c.start(n2)
+	time.Sleep(2 * time.Second) // let the two nodes see each other, as long-running live nodes do
+	for round, format := range []string{"1v1", "2v2"} {
+		names := []string{fmt.Sprintf("p%da", round), fmt.Sprintf("p%db", round)}
+		bots := append(newBots(t, []string{gatewayURL(n1)}, names[0]), newBots(t, []string{gatewayURL(n2)}, names[1])...)
+		type res struct {
+			r   map[string]any
+			err error
+		}
+		out := make([]res, len(bots))
+		var wg sync.WaitGroup
+		for i := range bots {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				r, err := bots[i].RPC("tango.match.quick_join", map[string]any{"mode": "no_mercy", "format": format, "fee": 200})
+				out[i] = res{r, err}
+				if err == nil {
+					out[i].err = bots[i].Play(r["match_id"].(string))
+				}
+			}(i)
+		}
+		wg.Wait()
+		for i, o := range out {
+			if o.err != nil {
+				t.Fatalf("%s player %d: %v\nresults: %v | %v\n%s\n%s", format, i, o.err, out[0].r, out[1].r, tail(n1.log), tail(n2.log))
+			}
+		}
+		if out[0].r["match_id"] != out[1].r["match_id"] {
+			t.Fatalf("%s: players pressed Start together but got different matches: %v vs %v\n%s\n%s", format, out[0].r, out[1].r, tail(n1.log), tail(n2.log))
+		}
+		for _, b := range bots {
+			b.Stop()
 		}
 	}
 }

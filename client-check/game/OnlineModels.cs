@@ -36,6 +36,8 @@ namespace UnoGame.Online
         public int Capacity;
         public bool IsHost;
         public bool Started;
+        /// <summary>Every seat is taken and the round begins in a moment.</summary>
+        public bool Starting;
         public bool Teams;
         public string Preset = "house";
         public string Error = "";
@@ -48,6 +50,23 @@ namespace UnoGame.Online
         public int MatchSeconds;
         /// <summary>Seconds per turn at this table.</summary>
         public int TurnSeconds;
+        /// <summary>A friends room (invite-only) rather than a public table.</summary>
+        public bool Private;
+        /// <summary>A public table a group of friends took to matchmaking together.</summary>
+        public bool Party;
+        /// <summary>Entry fee of a public table.</summary>
+        public int Fee;
+        /// <summary>When the server fills the empty seats of a public table with players (0 = not waiting).</summary>
+        public long FillAtUnixMs;
+    }
+
+    /// <summary>Who is playing right now: players online and the players waiting at each public table of a mode.</summary>
+    public sealed class LobbyStats
+    {
+        public int Online, InGame;
+        /// <summary>"format_fee" (e.g. "2v2_400") → players waiting at that table.</summary>
+        public Dictionary<string, int> Waiting = new Dictionary<string, int>();
+        public int WaitingAt(string format, int fee) => Waiting.TryGetValue(format + "_" + fee, out int n) ? n : 0;
     }
 
     /// <summary>The player's wallet, collection and standing, as the server keeps them.</summary>

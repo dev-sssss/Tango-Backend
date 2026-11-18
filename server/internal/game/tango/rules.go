@@ -41,7 +41,10 @@ const (
 	PhaseColor = "color" // pick a colour for a black card just played
 	PhaseKeep  = "keep"  // keep or play a drawn black plus
 	PhaseSwap  = "swap"  // No Mercy 7: choose whose hand to swap with
-	PhaseOver  = "over"
+	// PhaseRoulette: No Mercy Color Roulette; the player hit by it (PhaseSeat)
+	// names a colour, then turns cards from the pile until that colour shows.
+	PhaseRoulette = "roulette"
+	PhaseOver     = "over"
 )
 
 // Server→client event opcodes.
@@ -272,7 +275,13 @@ func (t *Table) Teammates(a, b int) bool {
 // whose card it is).
 func (t *Table) Legal(c Card) bool {
 	if t.Pending > 0 {
-		// A black plus answers any stack; a coloured +2/+4 only in the colour in play.
+		if t.Mode == ModeNoMercy {
+			// Official No Mercy stacking: any draw card of equal or higher
+			// value than the last one, whatever its colour.
+			return c.IsPlus() && c.DrawAmount() >= t.Top().DrawAmount()
+		}
+		// Classic (house rule): a black plus answers any stack; a coloured
+		// +2/+4 only in the colour in play.
 		return c.IsWildPlus() || (c.IsPlus() && !c.IsWild() && c.Color == t.Color)
 	}
 	if c.IsWild() || c.Color == t.Color {
@@ -407,6 +416,14 @@ func (t *Table) commitPlay(seat, idx int, color string, now int64, auto bool) {
 		t.finish(seat, p.Team, "empty_hand")
 		return
 	}
+	if c.Kind == KindRoulette {
+		// The next player names the colour, then turns cards until it shows.
+		victim := t.Next(seat, 1)
+		t.emit(OpEffect, "roulette", seat, map[string]any{"target": victim}, nil)
+		t.Turn, t.Phase, t.PhaseSeat, t.Deadline = victim, PhaseRoulette, victim, now+t.TurnMs
+		t.emit(OpTurn, "turn", victim, t.turnData(), nil)
+		return
+	}
 	if c.IsWild() {
 		t.Wild = &PendingWild{Seat: seat, Card: c, FirstOfStack: firstOfStack, HadColor: hadColor, ColorBefore: t.Color}
 		if ValidColor(color) {
@@ -482,9 +499,19 @@ func (t *Table) applyColor(seat int, color string, now int64) {
 	t.Wild = nil
 	t.Color = color
 	t.emit(OpColorChosen, "color_chosen", seat, map[string]any{"color": color}, nil)
+	if w != nil && w.Card.Kind == KindWildRev4 {
+		// Reverse first: the draw goes to the next player in the new direction.
+		t.Dir = -t.Dir
+		t.emit(OpEffect, "reverse", seat, map[string]any{"dir": t.Dir}, nil)
+	}
 	if w != nil && w.Card.IsWildPlus() {
 		t.Pending += w.Card.DrawAmount()
-		t.Chal = &Challenge{Target: seat, Open: w.FirstOfStack, HadColor: w.HadColor, ColorBefore: w.ColorBefore}
+		t.Chal = nil
+		if t.Mode != ModeNoMercy {
+			// Classic only: the first black plus of a stack can be challenged
+			// (official No Mercy has no challenge).
+			t.Chal = &Challenge{Target: seat, Open: w.FirstOfStack, HadColor: w.HadColor, ColorBefore: w.ColorBefore}
+		}
 	}
 	t.beginTurn(t.Next(seat, 1), now)
 }
@@ -597,14 +624,42 @@ func (t *Table) ChooseColor(seat int, color string, now int64) error {
 	if t.Over {
 		return ruleErr("GAME_OVER")
 	}
-	if t.Phase != PhaseColor || t.PhaseSeat != seat {
+	if (t.Phase != PhaseColor && t.Phase != PhaseRoulette) || t.PhaseSeat != seat {
 		return ruleErr("NOT_YOUR_TURN")
 	}
 	if !ValidColor(color) {
 		return ruleErr("BAD_COLOR")
 	}
+	if t.Phase == PhaseRoulette {
+		t.resolveRoulette(seat, color, now)
+		return nil
+	}
 	t.applyColor(seat, color, now)
 	return nil
+}
+
+// resolveRoulette: seat named color; they turn cards from the pile until one
+// of that colour shows (black cards don't count), keep every card turned,
+// the named colour is now in play and they lose their turn.
+func (t *Table) resolveRoulette(seat int, color string, now int64) {
+	p := t.Players[seat]
+	var got []Card
+	for len(p.Hand)+len(got) < MercyLimit+20 {
+		if len(t.Pile) == 0 && !t.reshuffle() {
+			break
+		}
+		c := t.pop()
+		got = append(got, c)
+		if c.Color == color {
+			break
+		}
+	}
+	p.Hand = append(p.Hand, got...)
+	p.Vulnerable, p.TangoArmed = false, false
+	t.Color = color
+	t.emit(OpColorChosen, "color_chosen", seat, map[string]any{"color": color, "roulette": true}, nil)
+	t.emit(OpCardsDrawn, "cards_drawn", seat, map[string]any{"count": len(got), "reason": "roulette", "hand_count": len(p.Hand)}, got)
+	t.beginTurn(t.Next(seat, 1), now)
 }
 
 // Draw takes the pending stack, or one card. A drawn card that fits is
@@ -618,12 +673,17 @@ func (t *Table) Draw(seat int, now int64) error {
 		t.beginTurn(t.Next(seat, 1), now)
 		return nil
 	}
-	got := t.drawCards(seat, 1, "draw")
-	if len(got) == 0 || !t.Legal(got[0]) {
+	var got []Card
+	if t.Mode == ModeNoMercy {
+		got = t.drawUntilPlayable(seat)
+	} else {
+		got = t.drawCards(seat, 1, "draw")
+	}
+	if len(got) == 0 || !t.Legal(got[len(got)-1]) || len(t.Players[seat].Hand) >= MercyLimit && t.Mode == ModeNoMercy {
 		t.beginTurn(t.Next(seat, 1), now)
 		return nil
 	}
-	c := got[0]
+	c := got[len(got)-1]
 	p := t.Players[seat]
 	if c.IsWildPlus() {
 		t.Phase, t.PhaseSeat, t.Deadline, t.Drawn = PhaseKeep, seat, now+t.TurnMs, &c
@@ -739,6 +799,8 @@ func (t *Table) Timeout(now int64, rng RNG) (int, bool) {
 		_ = t.KeepOrPlay(seat, false, "", now)
 	case PhaseSwap:
 		_ = t.Swap(seat, t.FewestCards(seat), now)
+	case PhaseRoulette:
+		t.resolveRoulette(seat, Colors[rng.RandInt(0, len(Colors)-1)], now)
 	case PhaseTurn:
 		_ = t.Draw(seat, now)
 	}
@@ -774,6 +836,32 @@ func BestColor(h []Card, rng RNG) string {
 		return Colors[rng.RandInt(0, len(Colors)-1)]
 	}
 	return best
+}
+
+// drawUntilPlayable is official No Mercy's draw: keep drawing until a card
+// that can be played turns up (or the Mercy limit is reached).
+func (t *Table) drawUntilPlayable(seat int) []Card {
+	p := t.Players[seat]
+	var got []Card
+	for len(p.Hand) < MercyLimit {
+		if len(t.Pile) == 0 && !t.reshuffle() {
+			break
+		}
+		c := t.pop()
+		got = append(got, c)
+		p.Hand = append(p.Hand, c)
+		if t.Legal(c) {
+			break
+		}
+	}
+	if len(p.Hand) != 1 {
+		p.Vulnerable = false
+	}
+	if len(p.Hand) >= 3 {
+		p.TangoArmed = false
+	}
+	t.emit(OpCardsDrawn, "cards_drawn", seat, map[string]any{"count": len(got), "reason": "draw", "hand_count": len(p.Hand)}, got)
+	return got
 }
 
 func (t *Table) drawStack(seat int, now int64) {
@@ -851,6 +939,10 @@ func (t *Table) Remove(seat int, reason string, rng RNG, now int64) {
 		return
 	}
 	if t.PhaseSeat == seat || t.Turn == seat {
+		if t.Phase == PhaseRoulette {
+			t.beginTurn(t.Next(seat, 1), now)
+			return
+		}
 		if t.Phase == PhaseColor && t.Wild != nil {
 			t.applyColor(seat, Colors[rng.RandInt(0, 3)], now)
 			return

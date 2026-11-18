@@ -60,7 +60,7 @@ func TestDeckSizes(t *testing.T) {
 	if n := len(NewDeck(ModeClassic)); n != 108 {
 		t.Fatalf("classic deck %d", n)
 	}
-	if n := len(NewDeck(ModeNoMercy)); n != 160 {
+	if n := len(NewDeck(ModeNoMercy)); n != 168 {
 		t.Fatalf("no mercy deck %d", n)
 	}
 	seen := map[int]bool{}
@@ -127,6 +127,7 @@ func TestStackingRules(t *testing.T) {
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed,
 		[]Card{w4, num(ColorRed, 1), num(ColorRed, 2)},
 		[]Card{green2, yellow2, w6, num(ColorBlue, 1)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	mustOK(t, tb.Play(0, w4.ID, ColorGreen, 0))
 	if tb.Pending != 4 || tb.Turn != 1 {
 		t.Fatalf("pending %d turn %d", tb.Pending, tb.Turn)
@@ -146,6 +147,7 @@ func TestBlackPlusOnAnyPlus(t *testing.T) {
 	r2 := card(ColorRed, KindDraw2, 0)
 	w10 := card(ColorWild, KindWild10, 0)
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{r2, num(ColorRed, 1)}, []Card{w10, num(ColorBlue, 1)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	mustOK(t, tb.Play(0, r2.ID, "", 0))
 	mustOK(t, tb.Play(1, w10.ID, ColorBlue, 0))
 	if tb.Players[0].Hand[0].ID == 0 || tb.Pending != 0 {
@@ -160,6 +162,7 @@ func TestBlackPlusOnAnyPlus(t *testing.T) {
 func TestChallengeGuilty(t *testing.T) {
 	w4 := card(ColorWild, KindWild4, 0)
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{w4, num(ColorRed, 1), num(ColorBlue, 3)}, []Card{num(ColorBlue, 1), num(ColorGreen, 2)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	mustOK(t, tb.Play(0, w4.ID, ColorBlue, 0))
 	if !tb.CanChallenge(1) {
 		t.Fatal("first wild plus must be challengeable")
@@ -173,6 +176,7 @@ func TestChallengeGuilty(t *testing.T) {
 func TestChallengeInnocent(t *testing.T) {
 	w4 := card(ColorWild, KindWild4, 0)
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{w4, num(ColorBlue, 1), num(ColorBlue, 3)}, []Card{num(ColorYellow, 1), num(ColorGreen, 2)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	mustOK(t, tb.Play(0, w4.ID, ColorBlue, 0))
 	mustOK(t, tb.ChallengeTop(1, 0))
 	if len(tb.Players[1].Hand) != 2+6 || tb.Turn != 0 {
@@ -185,6 +189,7 @@ func TestChallengeOnlyFirstOfStack(t *testing.T) {
 	w4 := card(ColorWild, KindWild4, 0)
 	w4b := card(ColorWild, KindWild4, 0)
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{r2, w4b, num(ColorBlue, 1)}, []Card{w4, num(ColorBlue, 1), num(ColorBlue, 2)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	mustOK(t, tb.Play(0, r2.ID, "", 0))
 	mustOK(t, tb.Play(1, w4.ID, ColorGreen, 0))
 	if tb.CanChallenge(0) {
@@ -200,6 +205,7 @@ func TestChallengeOnlyFirstOfStack(t *testing.T) {
 
 func TestDrawNeverPenalises(t *testing.T) {
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{num(ColorRed, 1), num(ColorBlue, 2)}, []Card{num(ColorBlue, 1), num(ColorBlue, 7)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	before := len(tb.Players[0].Hand)
 	mustOK(t, tb.Draw(0, 0)) // filler yellow 9 does not fit red 5
 	if len(tb.Players[0].Hand) != before+1 || tb.Turn != 1 {
@@ -209,6 +215,7 @@ func TestDrawNeverPenalises(t *testing.T) {
 
 func TestDrawnPlayableAutoPlays(t *testing.T) {
 	tb := table(Format1v1, num(ColorYellow, 5), ColorYellow, []Card{num(ColorRed, 1), num(ColorBlue, 2)}, []Card{num(ColorBlue, 1), num(ColorBlue, 7)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	before := len(tb.Players[0].Hand)
 	mustOK(t, tb.Draw(0, 0)) // yellow 9 fits yellow 5
 	if len(tb.Players[0].Hand) != before || tb.Top().Value != 9 || tb.Turn != 1 {
@@ -218,6 +225,7 @@ func TestDrawnPlayableAutoPlays(t *testing.T) {
 
 func TestDrawnWildPlusOffersKeepOrPlay(t *testing.T) {
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{num(ColorBlue, 1), num(ColorBlue, 2)}, []Card{num(ColorBlue, 3), num(ColorBlue, 7)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	w6 := card(ColorWild, KindWild6, 0)
 	tb.Pile = append(tb.Pile, w6)
 	mustOK(t, tb.Draw(0, 0))
@@ -232,6 +240,7 @@ func TestDrawnWildPlusOffersKeepOrPlay(t *testing.T) {
 
 func TestKeepDrawnWildPlus(t *testing.T) {
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{num(ColorBlue, 1), num(ColorBlue, 2)}, []Card{num(ColorBlue, 3), num(ColorBlue, 7)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	w4 := card(ColorWild, KindWild4, 0)
 	tb.Pile = append(tb.Pile, w4)
 	mustOK(t, tb.Draw(0, 0))
@@ -333,6 +342,7 @@ func TestRemoveInTeamsContinues(t *testing.T) {
 
 func TestTimeoutDraws(t *testing.T) {
 	tb := table(Format1v1, num(ColorRed, 5), ColorRed, []Card{num(ColorBlue, 1), num(ColorBlue, 2)}, []Card{num(ColorBlue, 3)})
+	tb.Mode = ModeClassic // house rules: colour-matched stacking, challenge, draw one
 	if _, fired := tb.Timeout(100, newRNG(3)); fired {
 		t.Fatal("too early")
 	}

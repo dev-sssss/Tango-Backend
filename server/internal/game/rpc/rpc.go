@@ -108,6 +108,8 @@ func (s *Service) Registry() map[string]*RPC {
 		{ID: "tango.match.quick_join_cancel", Fn: s.quickJoinCancel, Access: AccessUser},
 		{ID: "tango.room.create", Fn: s.createRoom, Access: AccessUser},
 		{ID: "tango.room.join", Fn: s.joinRoom, Access: AccessUser},
+		{ID: "tango.room.find_opponents", Fn: s.findOpponents, Access: AccessUser},
+		{ID: "tango.lobby.stats", Fn: s.lobbyStats, Access: AccessUser},
 		{ID: "tango.match.active", Fn: s.activeMatch, Access: AccessUser},
 		{ID: "tango.match.forfeit", Fn: s.forfeitActive, Access: AccessUser},
 		// social

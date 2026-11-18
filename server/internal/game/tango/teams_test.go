@@ -1,6 +1,7 @@
 package tango
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dev-sssss/tango_backend/server/internal/game"
@@ -74,5 +75,51 @@ func TestMercyOutPlayerCanRejoin(t *testing.T) {
 	}
 	if ok, reason := h.m.JoinAttempt(h.mc, h.d, h.tk, pres("c"), nil); ok || reason != "REMOVED" {
 		t.Fatalf("idle-removed player: %v %s", ok, reason)
+	}
+}
+
+// A friends party (host + invited friend in a 2v2 room) goes public: only
+// the host can do it, a stranger who presses Play joins the other team, and
+// after the public wait bots fill the last seat and the game starts with the
+// party still together.
+func TestPartyGoesPublic(t *testing.T) {
+	h := newHarness(t, 9, map[string]any{"mode": ModeClassic, "format": Format2v2, "private": true, "host_id": "host", "room_code": "123456"})
+	h.nk.AddUser("host", "host", "", map[string]int64{"coins": 1000})
+	h.nk.AddUser("friend", "friend", "", map[string]int64{"coins": 150})
+	h.nk.AddUser("stranger", "stranger", "", map[string]int64{"coins": 1000})
+	h.join("host")
+	h.joinWith("friend", map[string]string{"team_with": "host"})
+	if _, resp := h.m.Signal(h.mc, h.d, h.tk, `{"action":"GO_PUBLIC","user_id":"friend","fee":200}`); !strings.Contains(resp, `"ok":false`) {
+		t.Fatalf("only the host may take the party public: %s", resp)
+	}
+	if _, resp := h.m.Signal(h.mc, h.d, h.tk, `{"action":"GO_PUBLIC","user_id":"host","fee":200}`); !strings.Contains(resp, "INSUFFICIENT_COINS") || !strings.Contains(resp, "friend") {
+		t.Fatalf("a party member who cannot pay must be named: %s", resp)
+	}
+	if _, resp := h.m.Signal(h.mc, h.d, h.tk, `{"action":"GO_PUBLIC","user_id":"host","fee":100}`); resp != `{"ok":true}` {
+		t.Fatalf("go public: %s", resp)
+	}
+	s := h.m.s
+	if s.Private || !s.Party || s.Fee != 100 || !strings.Contains(s.Label, `"private":false`) || s.Settings.TurnSeconds != defaultTurnSeconds {
+		t.Fatalf("after going public: private=%v party=%v fee=%d label=%s", s.Private, s.Party, s.Fee, s.Label)
+	}
+	h.join("stranger")
+	plan := h.m.teamPlan()
+	if plan[0] != plan[1] || plan[2] == plan[0] {
+		t.Fatalf("teams while waiting %v: party must stay together, stranger on the other side", plan)
+	}
+	// Not yet: the public wait counts from going public.
+	h.tick(lobbyWaitMs - 2000)
+	if s.Status != StatusWaiting {
+		t.Fatalf("filled too early: %s", s.Status)
+	}
+	for i := 0; i < 200 && s.Status != StatusPlaying; i++ {
+		h.tick(100)
+	}
+	if s.Status != StatusPlaying || len(s.Seats) != 4 {
+		t.Fatalf("status %s seats %d", s.Status, len(s.Seats))
+	}
+	team := func(uid string) int { return h.m.seatOf(uid) % 2 }
+	if team("host") != team("friend") || team("stranger") == team("host") {
+		t.Fatalf("teams at the table: host %d friend %d stranger %d", team("host"), team("friend"), team("stranger"))
 	}
 }
