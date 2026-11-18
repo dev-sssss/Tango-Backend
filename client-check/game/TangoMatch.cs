@@ -419,6 +419,7 @@ namespace UnoGame.Online
                 case "BAD_TARGET": return "Choose another player to swap hands with.";
                 case "EMOTES_OFF": return "Emotes are switched off at this table.";
                 case "GAME_OVER": return "The match has finished.";
+                case "NEED_PLAYERS": return "Bots are off for this room: wait until every seat has a player.";
                 case "NOT_IN_GAME": return "You are no longer in this match.";
                 case "": return "";
                 default: return code.Replace('_', ' ').ToLowerInvariant();

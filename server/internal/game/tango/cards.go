@@ -130,12 +130,12 @@ var deckSpecs = map[string]deckSpec{
 	// 108 cards: per colour one 0, two of 1-9, two Skip, two Reverse, two +2;
 	// four Wild and four Wild +4.
 	ModeClassic: {zeros: 1, perNumber: 2, skips: 2, reverses: 2, draw2s: 2, wild: 4, wild4: 4},
-	// No Mercy, the official 168 cards: per colour two of 0-9, three Skip,
-	// three Reverse, three +2, three Discard All, two coloured +4 and two Skip
-	// Everyone; eight Wild Reverse +4, four Wild +6, four Wild +10 and eight
-	// Wild Color Roulette. There is no plain Wild and no plain Wild +4.
+	// No Mercy, 168 cards: per colour two of 0-9, three Skip, three Reverse,
+	// three +2, three Discard All, two coloured +4 and two Skip Everyone;
+	// eight Wild Reverse +4, four Wild +6, four Wild +10 and eight plain Wild
+	// (the game uses a plain colour-change Wild instead of Color Roulette).
 	ModeNoMercy: {zeros: 2, perNumber: 2, skips: 3, reverses: 3, draw2s: 3, draw4s: 2, skipAlls: 2, discardAlls: 3,
-		wildRev4: 8, wild6: 4, wild10: 4, roulettes: 8},
+		wildRev4: 8, wild6: 4, wild10: 4, wild: 8},
 }
 
 // ValidMode reports whether mode names a playable deck.

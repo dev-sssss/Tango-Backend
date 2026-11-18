@@ -123,7 +123,7 @@ func (s *Service) createRoom(c *Context, payload string) (string, error) {
 		if valid {
 			settings["turn_seconds"] = ts
 		}
-		for _, k := range []string{"emotes", "spectators", "mic", "jump_in", "seven_o"} {
+		for _, k := range []string{"emotes", "spectators", "mic", "jump_in", "seven_o", "bots"} {
 			if b, isBool := sm[k].(bool); isBool {
 				settings[k] = b
 			}

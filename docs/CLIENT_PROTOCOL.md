@@ -162,23 +162,22 @@ correct the device clock for countdowns.
 * Card kinds: `number` (with `value`), `skip`, `reverse`, `draw2`, `wild`,
   `wild4` (Classic); No Mercy uses coloured `draw4`, `skip_all`,
   `discard_all` and the black `wild_rev4` (Wild Reverse +4), `wild6`, `wild10`
-  and `roulette` (Wild Color Roulette). Black cards have `color: "wild"`; the
-  colour in play is `game.color`.
-* No Mercy follows the official rules with the 168-card deck: a player who
-  can't play draws until a playable card turns up (it is played for them; a
-  black draw card offers keep or play); stacking takes any draw card of equal
-  or higher value, any colour; there is no challenge; Wild Reverse +4 turns
-  play round (`effect` `reverse`) and the next player in the new direction
-  draws 4; Color Roulette (`effect` `roulette`, `target`) puts the next player
-  in phase `roulette`: they send CHOOSE_COLOR and turn cards until that colour
-  shows (`cards_drawn` `reason: "roulette"`), then lose the turn. 0 passes
-  every hand in the direction of play, 7 swaps hands with a chosen player, and
-  a player who reaches 25 cards is out (`player_removed` with
-  `reason: "mercy"`); the last player or team standing wins. A player out on
-  the 25-card rule may reconnect and watch the end.
-* Classic keeps its house rules: a black plus answers any stack, a coloured
-  +2 only in the colour in play, and the first black plus of a stack can be
-  challenged (`game.challenge_color` is the colour it was played over).
+  and plain `wild`. Black cards have `color: "wild"`; the colour in play is
+  `game.color`. (`roulette` is no longer dealt.)
+* Stacking (both modes): a black plus answers any stack whatever its size (+4
+  on +10 is fine); a coloured +2/+4 answers in the colour in play or on the
+  same card (+2 on +2), so a yellow +4 goes on a yellow +2 but a green +4 does
+  not. The first black plus of a stack can be challenged by the next player
+  (`game.can_challenge`; `game.challenge_color` is the colour it was played
+  over); the game only asks when that player has no draw card to pass it on.
+* No Mercy, 168 cards: a player who can't play draws until a playable card
+  turns up (it is played for them; a black draw card offers keep or play);
+  Wild Reverse +4 turns play round (`effect` `reverse`) and the next player in
+  the new direction faces the +4. 0 passes every hand in the direction of
+  play, 7 swaps hands with a chosen player, and a player who reaches 25 cards
+  is out (`player_removed` with `reason: "mercy"`); the last player or team
+  standing wins. A player out on the 25-card rule may reconnect and watch the
+  end.
 * Match clock: `game.ends_at_ms` (Classic 3 min, No Mercy 5 min, or the room's
   `settings.match_minutes` 3/5/10). When it runs out the fewest points win
   (`game.over_reason: "time_up"`). Turns are 10 s by default; three missed

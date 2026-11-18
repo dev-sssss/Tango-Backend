@@ -8,8 +8,9 @@ package tango
 //   - A card is playable on the same colour, the same number, the same action,
 //     or any black card.
 //   - Stacking: while a draw stack is pending, a black +4/+6/+10 can go on any
-//     plus; a coloured +2 only when its colour is the active colour. A player
-//     with nothing to stack (and no challenge) draws the whole stack at once.
+//     plus (any size: +4 on +10 is fine); a coloured +2/+4 when its colour is
+//     the active colour or it is the same card (+2 on +2). A player with
+//     nothing to stack (and no challenge) draws the whole stack at once.
 //   - Challenge: only the first black plus of a stack can be challenged, by the
 //     next player. If the player who played it held the colour that was active,
 //     they draw the stack and the challenger plays next; otherwise the
@@ -22,7 +23,7 @@ package tango
 //     them while they hold that one card; the hammered player draws two. A
 //     wrong hammer tap costs nothing.
 //   - The first player to empty their hand wins for their team; one round.
-//   - No Mercy (the game's 160-card deck) adds: coloured +4 (stacks like +2),
+//   - No Mercy (168 cards; plain Wilds, no Color Roulette) adds: coloured +4,
 //     Skip Everyone (the same player goes again), Discard All (also discards
 //     every other card of its colour), 0 passes every hand round the table in
 //     the direction of play, 7 swaps hands with a chosen player, and the
@@ -279,14 +280,18 @@ func (t *Table) Teammates(a, b int) bool {
 // whose card it is).
 func (t *Table) Legal(c Card) bool {
 	if t.Pending > 0 {
-		if t.Mode == ModeNoMercy {
-			// Official No Mercy stacking: any draw card of equal or higher
-			// value than the last one, whatever its colour.
-			return c.IsPlus() && c.DrawAmount() >= t.Top().DrawAmount()
+		// Stacking (both modes, the game's own rule): a black plus answers any
+		// stack, whatever its size; a coloured +2/+4 answers in the colour in
+		// play, or on the same card (+2 on +2). A yellow +2 takes a yellow +4
+		// but not a green +4.
+		if !c.IsPlus() {
+			return false
 		}
-		// Classic (house rule): a black plus answers any stack; a coloured
-		// +2/+4 only in the colour in play.
-		return c.IsWildPlus() || (c.IsPlus() && !c.IsWild() && c.Color == t.Color)
+		if c.IsWild() {
+			return true
+		}
+		top := t.Top()
+		return c.Color == t.Color || (!top.IsWild() && c.Kind == top.Kind)
 	}
 	if c.IsWild() || c.Color == t.Color {
 		return true
@@ -551,12 +556,9 @@ func (t *Table) applyColor(seat int, color string, now int64) {
 	}
 	if w != nil && w.Card.IsWildPlus() {
 		t.Pending += w.Card.DrawAmount()
-		t.Chal = nil
-		if t.Mode != ModeNoMercy {
-			// Classic only: the first black plus of a stack can be challenged
-			// (official No Mercy has no challenge).
-			t.Chal = &Challenge{Target: seat, Open: w.FirstOfStack, HadColor: w.HadColor, ColorBefore: w.ColorBefore}
-		}
+		// The first black plus of a stack can be challenged by the next player
+		// (both modes). A player who can stack on it simply plays instead.
+		t.Chal = &Challenge{Target: seat, Open: w.FirstOfStack, HadColor: w.HadColor, ColorBefore: w.ColorBefore}
 	}
 	t.beginTurn(t.Next(seat, 1), now)
 }

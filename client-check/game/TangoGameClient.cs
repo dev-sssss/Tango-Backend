@@ -185,9 +185,9 @@ namespace UnoGame.Online
             return await JoinAndWait((string)r["match_id"]);
         }
 
-        public async Task<OnlineRoomSnapshot> CreateRoom(string mode, string format, int turnSeconds, bool emotes = true, int matchMinutes = 0, bool jumpIn = false, bool sevenO = false)
+        public async Task<OnlineRoomSnapshot> CreateRoom(string mode, string format, int turnSeconds, bool emotes = true, int matchMinutes = 0, bool jumpIn = false, bool sevenO = false, bool bots = true)
         {
-            var settings = new JObject { ["turn_seconds"] = turnSeconds, ["emotes"] = emotes, ["spectators"] = false, ["mic"] = false, ["jump_in"] = jumpIn, ["seven_o"] = sevenO };
+            var settings = new JObject { ["turn_seconds"] = turnSeconds, ["emotes"] = emotes, ["spectators"] = false, ["mic"] = false, ["jump_in"] = jumpIn, ["seven_o"] = sevenO, ["bots"] = bots };
             if (matchMinutes > 0) settings["match_minutes"] = matchMinutes;
             var r = await Call("tango.room.create", new JObject { ["mode"] = mode, ["format"] = format, ["fee"] = 0, ["settings"] = settings });
             return await JoinAndWait((string)r["match_id"]);
@@ -399,6 +399,7 @@ namespace UnoGame.Online
                 case "ROOM_CLOSED": return "That room has closed.";
                 case "not_friends": return "You can only invite your friends.";
                 case "NOT_FOUND": return "No player found with that ID.";
+                case "NEED_PLAYERS": return "Bots are off for this room: wait until every seat has a player.";
                 default: return string.IsNullOrEmpty(message) ? (code ?? "Request refused.").Replace('_', ' ').ToLowerInvariant() : message;
             }
         }

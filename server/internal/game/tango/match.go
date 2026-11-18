@@ -84,6 +84,8 @@ type Settings struct {
 	// turn) and 7-0 in Classic (No Mercy always plays 7-0).
 	JumpIn bool `json:"jump_in,omitempty"`
 	SevenO bool `json:"seven_o,omitempty"`
+	// NoBots: the host turned bots off, so the room starts only when full.
+	NoBots bool `json:"no_bots,omitempty"`
 }
 
 // Seat is a player's place at the table plus connection bookkeeping.
@@ -232,6 +234,7 @@ func (m *Match) Init(mc *game.MatchContext, params map[string]any) (int, string)
 		st.Mic = boolParam(sm["mic"], false)
 		st.JumpIn = boolParam(sm["jump_in"], false)
 		st.SevenO = boolParam(sm["seven_o"], false)
+		st.NoBots = !boolParam(sm["bots"], true)
 	}
 	if st.TurnSeconds < 5 || st.TurnSeconds > 60 {
 		st.TurnSeconds = defaultTurnSeconds
@@ -564,6 +567,11 @@ func (m *Match) handle(ctx context.Context, d game.Dispatcher, msg game.MatchMes
 		return
 	case OpStart:
 		if s.Private && s.Status == StatusWaiting && msg.Sender.UserID == s.HostID && len(s.Seats) >= minPlayers {
+			if s.Settings.NoBots && len(s.Seats) < m.maxSeats() {
+				// Bots are off: wait until every seat has a player.
+				m.sendError(d, msg.Sender, "NEED_PLAYERS")
+				return
+			}
 			m.fillBots()
 			m.maybeStart(d, now)
 			m.broadcastLobby(d)
