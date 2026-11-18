@@ -149,6 +149,8 @@ namespace UnoGame
     [Serializable]
     public sealed class MatchView
     {
+        /// <summary>Room house rule: an identical card may be played out of turn (it shows in PlayableCardIds).</summary>
+        public bool JumpIn;
         /// <summary>In team matches: the hands of your partners (never the opponents').</summary>
         public List<AllyHand> AllyHands = new List<AllyHand>();
         public string MatchId;

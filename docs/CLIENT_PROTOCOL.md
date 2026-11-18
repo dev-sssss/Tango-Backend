@@ -49,7 +49,7 @@ with `"success": true` or `"success": false, "error": "<CODE>"`.
 | RPC id | Payload | Returns |
 |---|---|---|
 | `tango.profile.get` | `{}` | `profile` (name, avatar, frame, badge, card_back, table, trophies, wins, losses, games), `level`, `wallet {coins, diamonds}`, `player_id` (the permanent 8-character public ID, made with the account). Call first after sign-in: creates the profile, the player ID and the starting wallet (2,000 coins, 20 diamonds) once. |
-| `tango.profile.update` | `{"name":"Robin"}` and/or `{"tutorial_done":true}` | `profile`. Names 3–16 letters/digits/space/`_.-`. |
+| `tango.profile.update` | `{"name":"Robin"}` and/or `{"tutorial_done":true}` | `profile`, `wallet`, `charged`, `name_change_cost`. Names 3–16 letters/digits/space/`_.-`. The first chosen name is free; every later change costs `name_change_cost` coins (default 1,000; `INSUFFICIENT_COINS` when short). `profile.name_changes` counts the names chosen. |
 | `tango.wallet.get` | `{}` | `wallet` |
 | `tango.shop.catalog` | `{}` | `items[] {id, category, name, price{coins\|diamonds}, rarity, owned}`, `iap_products[]` |
 | `tango.shop.purchase` | `{"item_id":"frame_gold"}` | `wallet`. Errors: `INSUFFICIENT_FUNDS`, `ALREADY_OWNED`, `UNKNOWN_ITEM` |
@@ -61,7 +61,7 @@ with `"success": true` or `"success": false, "error": "<CODE>"`.
 | `tango.room.find_opponents` | `{"match_id":"…","fee":200}` | Party leader only: the friends room (still waiting) becomes the public waiting table for its mode/format at that fee. Strangers who quick-join that table sit down; the party keeps its teams; bots fill the rest 15 s later. Refused with `INSUFFICIENT_COINS` (`message` names who can't pay) or `NOT_ALLOWED` |
 | `tango.lobby.stats` | `{"mode":"classic"}` | `online`, `in_game` (players seen in the last 3 min) and `waiting`: `{"2v2_400": 1, …}` players waiting at each public table of the mode |
 | `tango.match.quick_join` | `{"mode":"classic"\|"no_mercy","format":"1v1"\|"2v2"\|"4v4"\|"4p"\|"8p","fee":200}` | `match_id` → join it on the socket. Fees: 200, 400, 1000, 2000, 5000. `4p`/`8p`: everyone for themselves |
-| `tango.room.create` | `{"mode","format","fee":0,"settings":{"turn_seconds":15,"emotes":true,"spectators":false,"mic":false}}` | `room_code` (6 digits), `match_id` |
+| `tango.room.create` | `{"mode","format","fee":0,"settings":{"turn_seconds":15,"emotes":true,"spectators":false,"mic":false,"jump_in":false,"seven_o":false}}` | `room_code` (6 digits), `match_id`. House rules (private rooms only): `jump_in` lets a player who is not on turn play a card identical to the top one (same colour and number/symbol, no black cards, not into a stack; play continues from them, effect `jump_in`); `seven_o` turns on 7 swap / 0 pass in Classic (No Mercy always has it). The game view carries `game.jump_in` and `game.seven_o`; out of turn, `game.playable` lists the jump-in cards. |
 | `tango.room.join` | `{"room_code":"123456"}` | `match_id`. Errors: `ROOM_NOT_FOUND`, `ROOM_STARTED`, `ROOM_FULL`. Join the match with metadata `{"team_with":"<inviter user_id>"}` after accepting an invite to sit on the inviter's team (2v2/4v4) |
 | `tango.match.active` | `{}` | `match_id` of a game still running (rejoin after a crash), or `null` |
 | `tango.match.forfeit` | `{}` | leaves the running game for good |

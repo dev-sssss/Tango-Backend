@@ -86,6 +86,15 @@ static class Program
             Check(a.Profile.PlayerId.Length == 8 && a.Profile.PlayerId == codeA, "player ID " + a.Profile.PlayerId + " in the profile and the friends screen");
             Check((await a.RefreshProfile()).PlayerId == codeA, "player ID stays the same");
 
+            Console.WriteLine("== name: the first is free, later changes cost coins");
+            int coinsBefore = (await a.RefreshProfile()).Coins;
+            var renamed = await a.SetName("Check A Two");
+            Check(renamed.Name == "Check A Two" && renamed.NameChanges >= 2 && renamed.Coins == coinsBefore - renamed.NameChangeCost,
+                "name change charged " + renamed.NameChangeCost + " coins (" + coinsBefore + " -> " + renamed.Coins + ")");
+            var same = await a.SetName("Check A Two");
+            Check(same.Coins == renamed.Coins, "saving the same name again is free");
+            await a.SetName("Check A"); // back to the name the team checks below look for
+
             Console.WriteLine("== Classic 2 vs 2 room: a stranger joins by code, an invited friend sits on the host's team");
             var s = NewClient(cfg, "check-s-" + suffix);
             await s.Initialize();

@@ -82,6 +82,8 @@ namespace UnoGame.Online
         public int Trophies, Level = 1, Wins, Games;
         public bool TutorialDone;
         public int MatchRewardCoins;
+        /// <summary>Names this player has chosen; the first is free, later changes cost NameChangeCost coins.</summary>
+        public int NameChanges, NameChangeCost = 1000;
         public List<string> Owned = new List<string>();
         public Dictionary<string, string> Equipped = new Dictionary<string, string>();
         public List<string> RewardedMatchIds = new List<string>();

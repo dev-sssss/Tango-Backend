@@ -22,6 +22,9 @@ type Profile struct {
 	Games     int    `json:"games"`
 	CreatedMs int64  `json:"created_ms"`
 	Tutorial  bool   `json:"tutorial_done"`
+	// NameChanges counts names the player chose. The first is free; later
+	// changes cost coins (AppConfig.NameChangeCoins).
+	NameChanges int `json:"name_changes"`
 }
 
 const (
@@ -40,7 +43,7 @@ var DefaultLoadout = map[string]string{
 func (p *Profile) toMap() map[string]any {
 	return map[string]any{"name": p.Name, "avatar": p.Avatar, "frame": p.Frame, "badge": p.Badge, "card_back": p.CardBack,
 		"table": p.TableSkin, "effect": p.Effect, "trophies": p.Trophies, "wins": p.Wins, "losses": p.Losses, "games": p.Games,
-		"created_ms": p.CreatedMs, "tutorial_done": p.Tutorial}
+		"created_ms": p.CreatedMs, "tutorial_done": p.Tutorial, "name_changes": p.NameChanges}
 }
 
 // Map returns the profile as a JSON-ready map.
@@ -65,6 +68,7 @@ func ProfileFromMap(m map[string]any) *Profile {
 		Badge: strOf(m["badge"], DefaultLoadout["badge"]), CardBack: strOf(m["card_back"], DefaultLoadout["card_back"]),
 		TableSkin: strOf(m["table"], DefaultLoadout["table"]), Effect: strOf(m["effect"], DefaultLoadout["effect"]), Trophies: intOf(m["trophies"]), Wins: intOf(m["wins"]),
 		Losses: intOf(m["losses"]), Games: intOf(m["games"]), CreatedMs: int64(intOf(m["created_ms"])), Tutorial: m["tutorial_done"] == true,
+		NameChanges: intOf(m["name_changes"]),
 	}
 }
 

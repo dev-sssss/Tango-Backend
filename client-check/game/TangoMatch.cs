@@ -137,6 +137,7 @@ namespace UnoGame.Online
                         case "discard_all": Emit("discardAll", seat, -1, ((int?)m["count"] ?? 0) + 1, (string)m["color"]); break;
                         case "rotate": Emit("rotate0", seat, -1, (int?)m["dir"] ?? lastDir); break;
                         case "swap": Emit("swap7", seat, (int?)m["target"] ?? -1, 0); break;
+                        case "jump_in": Emit("jumpIn", seat, (int?)m["from"] ?? -1, 0); break;
                         case "time_up": Emit("timeUp", seat, -1, (int?)m["points"] ?? 0); break;
                         // Wild Reverse +4 turns play around before the draw lands.
                         case "reverse": Emit("reverse", seat, -1, (int?)m["dir"] ?? -lastDir); lastDir = (int?)m["dir"] ?? -lastDir; break;
@@ -167,6 +168,13 @@ namespace UnoGame.Online
                     WinnerSeat = (int?)m["winner_seat"] ?? -1;
                     RematchAllowed = (bool?)m["rematch_allowed"] ?? false;
                     Results = ParseResults(m["results"] as JArray);
+                    // A forfeit is won by a team, not a seat: show the best-placed winner (never seat 0 by default).
+                    if (WinnerSeat < 0)
+                    {
+                        var best = Results.Where(r => r.Winner && !r.Removed).OrderBy(r => r.Rank <= 0 ? 99 : r.Rank).ThenBy(r => r.Points).FirstOrDefault()
+                            ?? Results.Where(r => r.Winner).OrderBy(r => r.Rank <= 0 ? 99 : r.Rank).FirstOrDefault();
+                        if (best != null) WinnerSeat = best.Seat;
+                    }
                     Emit("roundWin", WinnerSeat, -1, Results.Where(r => !r.Winner).Sum(r => r.Points));
                     changed = true;
                     break;
@@ -290,7 +298,9 @@ namespace UnoGame.Online
             v.ChallengeSeat = v.CanChallenge ? lastPlusSeat : -1;
             v.ChallengeColor = v.CanChallenge ? (string)g["challenge_color"] ?? "" : "";
             v.CanCallUno = !over && !tango && !removed && ((mine && phase == "turn" && hand.Count == 2) || (hand.Count == 1 && vulnerable));
-            if (mine && phase == "turn" && g["playable"] is JArray playable)
+            v.JumpIn = (bool?)g["jump_in"] ?? false;
+            // With Jump-In, the server also lists identical cards you may play out of turn.
+            if (((mine && phase == "turn") || (v.JumpIn && !over && !removed)) && g["playable"] is JArray playable)
                 foreach (var id in playable) v.PlayableCardIds.Add(((int)id).ToString());
             long localNow = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             for (int i = 0; i < players.Count; i++)

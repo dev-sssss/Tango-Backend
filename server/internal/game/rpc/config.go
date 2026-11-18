@@ -40,6 +40,8 @@ type AppConfig struct {
 	SpinAdPerDay     int         `json:"spin_ad_per_day"`
 	SpinPrizes       []SpinPrize `json:"spin_prizes"`
 	SpinDayOffsetMin int         `json:"spin_day_offset_min"`
+	// Coins a name change costs after the first (free) one.
+	NameChangeCoins int64 `json:"name_change_coins"`
 }
 
 func defaultAppConfig() AppConfig {
@@ -49,6 +51,7 @@ func defaultAppConfig() AppConfig {
 		TurnSecondsOptions: []int{10, 15, 20, 30}, LobbyWaitSeconds: 15, MinClientVersion: "0.0.0",
 		Formats: []string{"1v1", "2v2", "4v4", "4p", "8p"}, Modes: []string{"classic", "no_mercy"},
 		SpinFreePerDay: 1, SpinAdPerDay: 3, SpinPrizes: defaultSpinPrizes(), SpinDayOffsetMin: 330,
+		NameChangeCoins: 1000,
 	}
 }
 

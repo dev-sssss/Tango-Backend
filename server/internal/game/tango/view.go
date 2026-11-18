@@ -138,7 +138,7 @@ func (m *Match) view(seat int) map[string]any {
 	if t := s.Table; t != nil && s.Status != StatusStarting {
 		g := map[string]any{"top": t.Top(), "color": t.Color, "turn": t.Turn, "dir": t.Dir, "pending": t.Pending,
 			"phase": t.Phase, "phase_seat": t.PhaseSeat, "deadline_ms": t.Deadline, "draw_count": len(t.Pile),
-			"discard_count": len(t.Discard), "over": t.Over, "ends_at_ms": t.EndsAt, "over_reason": t.OverReason}
+			"discard_count": len(t.Discard), "over": t.Over, "ends_at_ms": t.EndsAt, "over_reason": t.OverReason, "jump_in": t.JumpIn, "seven_o": t.SevenO || t.Mode == ModeNoMercy}
 		recent := t.Discard
 		if len(recent) > 5 {
 			recent = recent[len(recent)-5:]
@@ -146,6 +146,10 @@ func (m *Match) view(seat int) map[string]any {
 		g["recent"] = recent
 		if seat >= 0 {
 			g["playable"] = t.Playable(seat)
+			if t.JumpIn && t.Turn != seat {
+				// Out of turn, the only playable cards are identical ones (Jump-In).
+				g["playable"] = t.JumpInCards(seat)
+			}
 			g["can_challenge"] = t.CanChallenge(seat)
 			if t.CanChallenge(seat) {
 				g["challenge_color"] = t.Chal.ColorBefore // the colour that was in play before the black plus

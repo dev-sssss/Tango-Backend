@@ -73,6 +73,38 @@ func TestUpdateName(t *testing.T) {
 	}
 }
 
+func TestNameChangeCostsCoins(t *testing.T) {
+	s, nk, c := setup(nil)
+	call(t, s, c, "tango.profile.get", "") // 2000 starting coins
+	// The first chosen name is free.
+	if r := call(t, s, c, "tango.profile.update", `{"name":"Robin"}`); r["charged"] != float64(0) {
+		t.Fatalf("first name: %v", r)
+	}
+	if w := nk.Wallet(uid); w["coins"] != 2000 {
+		t.Fatalf("first name charged: %v", w)
+	}
+	// Saving the same name again costs nothing.
+	if r := call(t, s, c, "tango.profile.update", `{"name":"Robin"}`); r["charged"] != float64(0) {
+		t.Fatalf("same name: %v", r)
+	}
+	// A real change costs 1000 coins.
+	r := call(t, s, c, "tango.profile.update", `{"name":"Robin Two"}`)
+	if r["charged"] != float64(1000) || r["profile"].(map[string]any)["name"] != "Robin Two" {
+		t.Fatalf("second name: %v", r)
+	}
+	if w := nk.Wallet(uid); w["coins"] != 1000 {
+		t.Fatalf("not charged: %v", w)
+	}
+	call(t, s, c, "tango.profile.update", `{"name":"Robin Three"}`)
+	// Out of coins: refused, name kept.
+	if r := call(t, s, c, "tango.profile.update", `{"name":"Robin Four"}`); r["error"] != "INSUFFICIENT_COINS" {
+		t.Fatalf("no coins: %v", r)
+	}
+	if r := call(t, s, c, "tango.profile.get", ""); r["profile"].(map[string]any)["name"] != "Robin Three" {
+		t.Fatalf("name changed without paying: %v", r)
+	}
+}
+
 func TestPurchaseAndEquip(t *testing.T) {
 	s, nk, c := setup(nil)
 	call(t, s, c, "tango.profile.get", "")

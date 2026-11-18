@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -57,6 +58,7 @@ func (s *Service) getProfile(c *Context, payload string) (string, error) {
 		return "", err
 	}
 	out := map[string]any{"user_id": c.UserID, "username": c.Username, "profile": p.Map(), "level": tango.LevelFor(p.Trophies),
+		"name_change_cost":       s.loadAppConfig(ctx).NameChangeCoins,
 		"trophies_to_next_level": tango.TrophiesPerLevel - p.Trophies%tango.TrophiesPerLevel, "wallet": w}
 	if soc, ok := game.SocialFrom(s.NK); ok {
 		if id, err := soc.PlayerID(ctx, c.UserID); err == nil {
@@ -77,22 +79,53 @@ func (s *Service) updateProfile(c *Context, payload string) (string, error) {
 	if hasName && !nameRe.MatchString(name) {
 		return refuse("INVALID_NAME")
 	}
-	p, err := game.UpdateProfile(ctx, s.NK, c.UserID, func(p *game.Profile) error {
-		if hasName {
+	cfg := s.loadAppConfig(ctx)
+	for attempt := 0; attempt < 5; attempt++ {
+		p, ver, err := game.LoadProfile(ctx, s.NK, c.UserID)
+		if err != nil {
+			return "", fail(err.Error())
+		}
+		var cost int64
+		renamed := hasName && name != p.Name
+		if renamed {
+			// The first name a player picks is free; every later change costs coins.
+			if p.NameChanges > 0 {
+				cost = cfg.NameChangeCoins
+			}
 			p.Name = name
+			p.NameChanges++
 		}
 		if data["tutorial_done"] == true {
 			p.Tutorial = true
 		}
-		return nil
-	})
-	if err != nil {
-		return "", fail(err.Error())
+		if ver == "" {
+			ver = "*"
+		}
+		writes := []*game.Write{{Collection: game.ProfileCollection, Key: game.ProfileKey, UserID: c.UserID, Value: p.Map(), Version: ver, PermissionRead: 2}}
+		var wallets []*game.WalletUpdate
+		if cost > 0 {
+			wallets = []*game.WalletUpdate{{UserID: c.UserID, Changeset: map[string]int64{"coins": -cost}, Metadata: map[string]any{"reason": "name_change"}}}
+		}
+		err = s.NK.MultiUpdate(ctx, writes, wallets, true)
+		if err == nil {
+			if renamed {
+				_ = s.NK.AccountUpdate(ctx, c.UserID, "", &name, nil)
+			}
+			out := map[string]any{"profile": p.Map(), "name_change_cost": cfg.NameChangeCoins, "charged": cost}
+			if w, werr := s.wallet(ctx, c.UserID); werr == nil {
+				out["wallet"] = w
+			}
+			return ok(out)
+		}
+		if isNegative(err) {
+			return enc(map[string]any{"success": false, "error": "INSUFFICIENT_COINS",
+				"message": fmt.Sprintf("Changing your name costs %d coins.", cost)}), nil
+		}
+		if !isVersionErr(err) {
+			return "", fail(err.Error())
+		}
 	}
-	if hasName {
-		_ = s.NK.AccountUpdate(ctx, c.UserID, "", &name, nil)
-	}
-	return ok(map[string]any{"profile": p.Map()})
+	return refuse("BUSY")
 }
 
 func (s *Service) deleteOwnAccount(c *Context, payload string) (string, error) {

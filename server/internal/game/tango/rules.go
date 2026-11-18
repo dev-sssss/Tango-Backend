@@ -162,6 +162,10 @@ type Table struct {
 	// EndsAt is the match clock (server ms, 0 = no clock).
 	EndsAt int64 `json:"ends_at,omitempty"`
 
+	// Room house rules (see Settings): Jump-In, and 7-0 in Classic.
+	JumpIn bool `json:"jump_in,omitempty"`
+	SevenO bool `json:"seven_o,omitempty"`
+
 	Over       bool   `json:"over"`
 	Winner     int    `json:"winner"`
 	WinTeam    int    `json:"win_team"`
@@ -359,6 +363,47 @@ func (t *Table) requireTurn(seat int) (*Player, error) {
 	return p, nil
 }
 
+// JumpInCards lists the cards seat could jump in with right now: with the
+// Jump-In rule on, a player who is not on turn may play a card identical to
+// the top card (same colour and same number or symbol; never a black card,
+// never into a pending stack). Play then continues from them.
+func (t *Table) JumpInCards(seat int) []int {
+	out := []int{}
+	p := t.player(seat)
+	if !t.JumpIn || t.Over || p == nil || p.Removed || t.Phase != PhaseTurn || t.Turn == seat || t.Pending > 0 || len(t.Discard) == 0 {
+		return out
+	}
+	top := t.Top()
+	if top.IsWild() || top.Color != t.Color {
+		return out
+	}
+	for _, c := range p.Hand {
+		if !c.IsWild() && c.Color == top.Color && c.Kind == top.Kind && (c.Kind != KindNumber || c.Value == top.Value) {
+			out = append(out, c.ID)
+		}
+	}
+	return out
+}
+
+// JumpInPlay plays an identical card out of turn (see JumpInCards).
+func (t *Table) JumpInPlay(seat, cardID int, now int64) error {
+	ok := false
+	for _, id := range t.JumpInCards(seat) {
+		if id == cardID {
+			ok = true
+		}
+	}
+	if !ok {
+		return ruleErr("NOT_YOUR_TURN")
+	}
+	p := t.player(seat)
+	idx := indexOf(p.Hand, cardID)
+	t.emit(OpEffect, "jump_in", seat, map[string]any{"from": t.Turn}, nil)
+	t.Turn, t.PhaseSeat, t.Drawn = seat, seat, nil
+	t.commitPlay(seat, idx, "", now, false)
+	return nil
+}
+
 // Play plays card id from seat's hand. color is required for black cards
 // unless the player will pick it afterwards with ChooseColor.
 func (t *Table) Play(seat, cardID int, color string, now int64) error {
@@ -463,10 +508,10 @@ func (t *Table) commitPlay(seat, idx int, color string, now int64, auto bool) {
 		}
 		p.Vulnerable = len(p.Hand) == 1 && !p.TangoArmed
 		t.beginTurn(t.Next(seat, 1), now)
-	case noMercy && c.Kind == KindNumber && c.Value == 0:
+	case (noMercy || t.SevenO) && c.Kind == KindNumber && c.Value == 0:
 		t.rotateHands(seat)
 		t.beginTurn(t.Next(seat, 1), now)
-	case noMercy && c.Kind == KindNumber && c.Value == 7:
+	case (noMercy || t.SevenO) && c.Kind == KindNumber && c.Value == 7:
 		targets := t.SwapTargets(seat)
 		switch len(targets) {
 		case 0:

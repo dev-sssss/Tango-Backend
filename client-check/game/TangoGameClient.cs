@@ -126,7 +126,8 @@ namespace UnoGame.Online
                 Coins = (int?)wallet["coins"] ?? 0, Diamonds = (int?)wallet["diamonds"] ?? 0,
                 Name = (string)profile["name"] ?? "", PlayerId = (string)p["player_id"] ?? "", Trophies = (int?)profile["trophies"] ?? 0, Level = (int?)p["level"] ?? 1,
                 Wins = (int?)profile["wins"] ?? 0, Games = (int?)profile["games"] ?? 0, TutorialDone = (bool?)profile["tutorial_done"] ?? false,
-                MatchRewardCoins = 0
+                MatchRewardCoins = 0,
+                NameChanges = (int?)profile["name_changes"] ?? 0, NameChangeCost = (int?)p["name_change_cost"] ?? 1000
             };
             foreach (var id in (inv["owned"] as JArray ?? new JArray()).Select(x => (string)x))
             {
@@ -184,9 +185,9 @@ namespace UnoGame.Online
             return await JoinAndWait((string)r["match_id"]);
         }
 
-        public async Task<OnlineRoomSnapshot> CreateRoom(string mode, string format, int turnSeconds, bool emotes = true, int matchMinutes = 0)
+        public async Task<OnlineRoomSnapshot> CreateRoom(string mode, string format, int turnSeconds, bool emotes = true, int matchMinutes = 0, bool jumpIn = false, bool sevenO = false)
         {
-            var settings = new JObject { ["turn_seconds"] = turnSeconds, ["emotes"] = emotes, ["spectators"] = false, ["mic"] = false };
+            var settings = new JObject { ["turn_seconds"] = turnSeconds, ["emotes"] = emotes, ["spectators"] = false, ["mic"] = false, ["jump_in"] = jumpIn, ["seven_o"] = sevenO };
             if (matchMinutes > 0) settings["match_minutes"] = matchMinutes;
             var r = await Call("tango.room.create", new JObject { ["mode"] = mode, ["format"] = format, ["fee"] = 0, ["settings"] = settings });
             return await JoinAndWait((string)r["match_id"]);

@@ -80,6 +80,10 @@ type Settings struct {
 	Emotes       bool `json:"emotes"`
 	Spectators   bool `json:"spectators"`
 	Mic          bool `json:"mic"`
+	// Room house rules: Jump-In (play a card identical to the top one out of
+	// turn) and 7-0 in Classic (No Mercy always plays 7-0).
+	JumpIn bool `json:"jump_in,omitempty"`
+	SevenO bool `json:"seven_o,omitempty"`
 }
 
 // Seat is a player's place at the table plus connection bookkeeping.
@@ -226,6 +230,8 @@ func (m *Match) Init(mc *game.MatchContext, params map[string]any) (int, string)
 		st.Emotes = boolParam(sm["emotes"], true)
 		st.Spectators = boolParam(sm["spectators"], false)
 		st.Mic = boolParam(sm["mic"], false)
+		st.JumpIn = boolParam(sm["jump_in"], false)
+		st.SevenO = boolParam(sm["seven_o"], false)
 	}
 	if st.TurnSeconds < 5 || st.TurnSeconds > 60 {
 		st.TurnSeconds = defaultTurnSeconds
@@ -578,7 +584,12 @@ func (m *Match) handle(ctx context.Context, d game.Dispatcher, msg game.MatchMes
 		if data["tango"] == true {
 			_ = t.PressTango(seat)
 		}
-		err = t.Play(seat, int(numParam(data["card_id"], -1)), strParam(data["color"], ""), now)
+		cardID := int(numParam(data["card_id"], -1))
+		if t.Turn != seat && t.JumpIn {
+			err = t.JumpInPlay(seat, cardID, now)
+		} else {
+			err = t.Play(seat, cardID, strParam(data["color"], ""), now)
+		}
 	case OpDraw:
 		err = t.Draw(seat, now)
 	case OpKeepOrPlay:
@@ -773,6 +784,9 @@ func (m *Match) startRound(ctx context.Context, d game.Dispatcher, now int64) {
 	}
 	s.Table = NewTable(s.Mode, s.Format, int64(s.Settings.TurnSeconds)*1000, players, m.nk, now)
 	s.Table.EndsAt = now + dealGraceMs + MatchClockMs(s.Mode, s.Settings.MatchMinutes)
+	// House rules apply to private rooms only.
+	s.Table.JumpIn = s.Private && s.Settings.JumpIn
+	s.Table.SevenO = s.Private && s.Settings.SevenO
 	s.Table.TakeEvents()
 	s.Status, s.StartedMs = StatusPlaying, now
 	for _, st := range s.Seats {
