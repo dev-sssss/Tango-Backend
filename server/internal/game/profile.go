@@ -36,7 +36,7 @@ const (
 // game's shop: Nova, the gold ring, the plain plate, the compass back, the
 // sunset table and the classic card effects).
 var DefaultLoadout = map[string]string{
-	"avatar": "avatar_nova", "frame": "frame_gold", "badge": "badge_none", "card_back": "back_default", "table": "table_sunset",
+	"avatar": "avatar_nova", "frame": "frame_gold", "badge": "badge_none", "card_back": "back_crimson", "table": "table_royal",
 	"effect": "effect_classic",
 }
 

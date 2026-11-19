@@ -14,7 +14,7 @@ var botNames = []string{
 
 var botSuffixes = []string{"", "", "", "_07", "99", "_k", "21", "_x", "777", "_pro", "123", "_r"}
 
-var botAvatars = []string{"avatar_kai", "avatar_nova", "avatar_iris", "avatar_ren"}
+var botAvatars = []string{"avatar_kai", "avatar_nova", "avatar_iris", "avatar_ren", "avatar_skye", "avatar_emi", "avatar_jett", "avatar_milo"}
 var botFrames = []string{"frame_gold", "frame_gold", "frame_starlight", "frame_azure", "frame_sakura", "frame_ember", "frame_koi"}
 var botBadges = []string{"badge_none", "badge_none", "badge_sunset", "badge_ocean", "badge_forest", "badge_star"}
 
@@ -31,7 +31,7 @@ func NewBotPlayer(rng RNG, id string, fee int64, taken map[string]bool) *Player 
 	base := 40 + int(fee/10)
 	return &Player{UserID: id, Name: name, Bot: true,
 		Avatar: botAvatars[rng.RandInt(0, len(botAvatars)-1)], Frame: botFrames[rng.RandInt(0, len(botFrames)-1)],
-		Badge: botBadges[rng.RandInt(0, len(botBadges)-1)], CardBack: "back_default", Trophies: base + rng.RandInt(0, 600)}
+		Badge: botBadges[rng.RandInt(0, len(botBadges)-1)], CardBack: "back_crimson", Trophies: base + rng.RandInt(0, 600)}
 }
 
 // Move is a bot decision.
